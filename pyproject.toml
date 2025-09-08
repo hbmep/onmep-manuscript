@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper"
+version = "0.5.0"
+description = "onmep-manuscript"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = "==3.11.*"
+authors = [
+    { name = "Vishweshwar Tyagi", email = "vt2353@columbia.edu" },
+    { name = "James R. McIntosh", email = "jrm2263@cumc.columbia.edu" },
+    { name = "Daniel Twili", email = "dt2589@columbia.edu" },
+]
+dependencies = [
+    "numpy==1.26.4",
+    "jax==0.7.1",
+    "jaxlib==0.7.1",
+    "numpyro==0.19.0",
+    "hbmep==0.9.0",
+    "onmep==0.5.0",
+    "pandas==3.0.2",
+    "scikit-learn==1.8.0",
+    "arviz==0.22.0",
+    "matplotlib==3.10.9",
+    "seaborn==0.13.2",
+    "joblib==1.5.2", 
+    "pylsl>=1.18.1",
+    "xmltodict>=1.0.2",
+    "pydantic>=2.13.1",
+]
+
+[project.optional-dependencies]
+cuda12 = ["jax[cuda12]==0.7.1"]
+
+[project.urls]
+"Homepage" = "https://github.com/hbmep/onmep-manuscript"
+"Bug Tracker" = "https://github.com/hbmep/onmep-manuscript/issues"
