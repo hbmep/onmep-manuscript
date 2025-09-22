@@ -32,10 +32,14 @@ class BaseAgent(BaseRTAgent, BaseModel):
         BaseRTAgent.__init__(self)
         BaseModel.__init__(self, toml_path=toml_path, config=config)
         self._key = random.key(0)
+        self.posterior = None
+        self.mcmc = None
 
     def reset(self) -> None:
         super().reset()
         self._key = random.key(0)
+        self.posterior = None
+        self.mcmc = None
 
     @timing
     def run(

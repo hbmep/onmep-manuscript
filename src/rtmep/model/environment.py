@@ -35,7 +35,8 @@ class BaseRTEnvironment(ABC):
         self.reset()
         agent.reset()
         while len(agent.data) < max_steps:
-            x = self.clip(agent.propose())
+            x = agent.propose()
+            x = self.clip(x)
             obs = self.step(x)
             agent_stop = agent.update(obs)
             if agent_stop or self.if_stop():
