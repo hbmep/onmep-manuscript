@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpyro as pyro
 import numpyro.distributions as dist
 
-from hbmep import functional as F, smooth_functional as SF
+from hbmep import functional as F
 from hbmep.model import BaseModel
 from hbmep.util import site
 
@@ -43,28 +43,14 @@ class Simulator(BaseModel):
         # Priors
         with pyro.plate(site.num_response, self.num_response):
             # Hyper-priors
-            a_loc = pyro.sample(
-                site.a.loc, dist.TruncatedNormal(50., 50., low=0)
-            )
-            b_loc = pyro.sample(
-                site.b.loc, dist.TruncatedNormal(0.5, 1.)
-            )
-            h_loc = pyro.sample(
-                site.h.loc, dist.TruncatedNormal(3., 5.)
-            )
+            a_loc = pyro.sample(site.a.loc, dist.TruncatedNormal(50., 50., low=0))
+            b_loc = pyro.sample(site.b.loc, dist.TruncatedNormal(0.5, 1.))
+            h_loc = pyro.sample(site.h.loc, dist.TruncatedNormal(3., 5.))
 
-            with pyro.plate_stack(
-                site.num_features, num_features, rightmost_dim=-2
-            ):
-                a = pyro.sample(
-                    site.a, dist.TruncatedNormal(a_loc, a_scale, low=0)
-                )
-                b = pyro.sample(
-                    site.b, dist.TruncatedNormal(b_loc, b_scale, low=0)
-                )
-                h = pyro.sample(
-                    site.h, dist.TruncatedNormal(h_loc, h_scale, low=0)
-                )
+            with pyro.plate_stack(site.num_features, num_features, rightmost_dim=-2):
+                a = pyro.sample(site.a, dist.TruncatedNormal(a_loc, a_scale, low=0))
+                b = pyro.sample(site.b, dist.TruncatedNormal(b_loc, b_scale, low=0))
+                h = pyro.sample(site.h, dist.TruncatedNormal(h_loc, h_scale, low=0))
 
                 g = pyro.sample(site.g, dist.HalfNormal(g_scale))
                 v = pyro.sample(site.v, dist.HalfNormal(v_scale))
@@ -80,23 +66,21 @@ class Simulator(BaseModel):
         with pyro.handlers.mask(mask=mask_obs):
             with pyro.plate(site.num_response, self.num_response):
                 with pyro.plate(site.num_data, num_data):
-                    mu, alpha, beta = self.gamma_likelihood(
-                        (
-                        F.rectified_logistic if self.simulate
-                        else SF.rectified_logistic
-                        ),
-                        intensity,
-                        (
+                    mu = pyro.deterministic(
+                        site.mu,
+                        F.rectified_logistic(
+                            intensity,
                             a[*features.T],
                             b[*features.T],
                             g[*features.T],
                             h[*features.T],
                             v[*features.T],
-                        ),
-                        c1[*features.T],
-                        c2[*features.T],
+                            0.0 if self.simulate else EPS
+                        )
                     )
-                    pyro.deterministic(site.mu, mu)
+                    alpha, beta = self.gamma_likelihood(
+                        mu, c1[*features.T], c2[*features.T],
+                    )
 
                     # Mixture distribution
                     if self.use_mixture:
