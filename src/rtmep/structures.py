@@ -23,13 +23,25 @@ class ObsArrays:
     def __init__(self, *, R: int | None = None, dtype=float, initial_capacity: int = 32):
         self.R: int | None = None if R is None else int(R)
         self.dtype = dtype
-        self._cap = max(1, int(initial_capacity))
+        self._cap = int(initial_capacity)
         self._n = 0
         self._X = np.empty((self._cap, 1), dtype=dtype)
         self._Y = np.empty((self._cap, 0 if self.R is None else self.R), dtype=dtype)
 
     def __len__(self) -> int:
         return self._n
+
+    @property
+    def n(self): return self._n
+
+    @property
+    def capacity(self): return self._cap
+
+    @property
+    def shape(self): return (self._n, self.R)
+
+    @property
+    def capacity_shape(self): return (self._cap, self.R)
 
     @property
     def X(self) -> np.ndarray:
@@ -89,3 +101,49 @@ class ObsArrays:
         for j, col in enumerate(response):
             data[col] = self.Y[:, j]
         return pd.DataFrame(data)
+
+    def resize_R(self, R_new: int) -> None:
+        R_new = int(R_new)
+        if self.R == R_new:
+            return
+        Y_new = np.empty((self._cap, R_new), dtype=self.dtype)
+        # Copy over as many existing response columns as we can
+        old_cols = self._Y.shape[1]
+        copy_cols = min(old_cols, R_new)
+        if copy_cols and self._n:
+            Y_new[:self._n, :copy_cols] = self._Y[:self._n, :copy_cols]
+        self._Y = Y_new
+        self.R = R_new
+
+    def to_state(self) -> dict:
+        return {
+            "R": self.R,
+            "_cap": self._cap,
+            "_n": self._n,
+            "_X": self._X[:self._n, :].copy(),
+            "_Y": self._Y[:self._n, :].copy(),
+            "dtype": str(np.dtype(self.dtype).name),
+        }
+
+    @classmethod
+    def from_state(cls, state: dict):
+        dtype = np.dtype(state.get("dtype", float))
+        cap   = int(state["_cap"])
+        n   = int(state["_n"])
+        R   = None if state["R"] is None else int(state["R"])
+
+        obj = cls(R=R, dtype=dtype, initial_capacity=cap)
+        obj._n   = n
+
+        # Restore arrays
+        x_src = state["_X"]
+        y_src = state["_Y"]
+        assert x_src.shape == (n, 1), f"X shape mismatch: {x_src.shape} vs {(n, 1)}"
+        obj._X[:n, :] = x_src
+
+        y_cols = 0 if R is None else R
+        assert y_src.shape == (n, y_cols), f"Y shape mismatch: {y_src.shape} vs {(n, y_cols)}"
+        if y_cols:
+            obj._Y[:n, :] = y_src
+
+        return obj

@@ -1,6 +1,8 @@
+import numpy as np
 from jax import random, numpy as jnp
 from hbmep.util import site
-from rtmep.environment import Observation, BaseEnvironment
+from rtmep import Observation
+from rtmep.environment.environment import BaseEnvironment
 
 from rtmep.notebooks.util import load_model
 
@@ -18,6 +20,7 @@ class SimulationEnv(BaseEnvironment):
         self.model_dir = model_dir
         self._key = random.key(0)
         self._init_draw(draw)
+        self.response = None
 
     def _init_draw(self, draw):
         model, df, post_one, *_ = load_model(self.model_dir, memmap_draw=draw)
@@ -53,6 +56,9 @@ class SimulationEnv(BaseEnvironment):
             return_sites=[site.obs],
             key=subkey,
         )[site.obs].reshape(-1,)
+        if self.response is not None:
+            mapping = dict(zip(self.model.response, obs))
+            obs = np.array([mapping[res] for res in self.response])
         return Observation(response=obs, intensity=intensity, info={"draw": self._draw})
 
     def state_dict(self) -> dict:

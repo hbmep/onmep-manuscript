@@ -3,8 +3,8 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 from rtmep import CheckpointManager
-from rtmep.environment import Observation
-from rtmep.agent import BaseRTAgent
+from rtmep import Observation
+from rtmep.agent.agent import BaseRTAgent
 
 logger = logging.getLogger(__name__)
 

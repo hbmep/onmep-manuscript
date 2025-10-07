@@ -1,5 +1,4 @@
 import os
-import json
 import logging
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
@@ -7,11 +6,10 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import numpy as np
 from jax import random
-from hbmep import site
 from rtmep import CheckpointManager
+from rtmep.agent import EIG
 from rtmep.environment import SimulationEnv
 
-from rtmep.notebooks.eig import EIG
 from rtmep.notebooks.constants import TMS_TOML, REPORTS
 from rtmep.notebooks.util import enable_logger
 
@@ -19,23 +17,20 @@ logger = logging.getLogger(__name__)
 BUILD_DIR = os.path.join(REPORTS, "tests")
 os.makedirs(BUILD_DIR, exist_ok=True)
 
-MODEL_DIR = "/home/vishu/reports/hbmep-adaptive/accuracy/learn_posterior/simulate_data"
+MODEL_DIR = os.path.join(REPORTS, "accuracy", "learn_posterior", "simulate_data")
 MAX_OBS = 8
 STOP_THEN = 5
-
 LO, HI = 0, 50
 
 
-def build_agent(build_dir: str, *, max_obs: int):
+def build_agent(build_dir: str):
     model = EIG(
         toml_path=TMS_TOML,
         min_observations=3,
-        max_observations=max_obs,
+        grid_lo=0., grid_hi=100., grid_n=201,
         method="mc",
         num_outer=None,
-        grid_lo=0., grid_hi=100., grid_n=201,
         max_step=50.,
-        save_every=False,
         batch_size=41
     )
     model.build_dir = build_dir
@@ -82,7 +77,7 @@ def run_continuous(model_dir: str, out_root: str, draw: int, *, max_obs: int):
     base = os.path.join(out_root, f"draw_{draw:04d}", "direct")
     os.makedirs(base, exist_ok=True)
 
-    model = build_agent(base, max_obs=max_obs)
+    model = build_agent(base)
     model._key = random.key(draw)
     env = build_env(model_dir, draw=draw)
 
@@ -102,17 +97,21 @@ def run_resume(model_dir: str, out_root: str, draw: int, *, stop_then: int, max_
     ckpt = CheckpointManager(ckpt_dir)
 
     # Phase 1: stop early at `stop_then`
-    model1 = build_agent(base, max_obs=max_obs)
+    model1 = build_agent(base)
     model1._key = random.key(draw)
     env1   = build_env(model_dir, draw=draw)
 
-    env1.interact(agent=model1, max_observations=stop_then, ckpt=ckpt, save_every=1, resume=False)
+    env1.interact(
+        agent=model1, max_observations=stop_then, ckpt=ckpt,
+        save_every=1, resume=False
+    )
 
     # Phase 2: simulate a "crash + restart": create fresh instances and resume
-    model2 = build_agent(base, max_obs=max_obs)
+    model2 = build_agent(base)
     env2   = build_env(model_dir, draw=draw)
 
     # Resume from latest
+    ckpt = CheckpointManager(ckpt_dir)
     env2.interact(agent=model2, max_observations=max_obs, ckpt=ckpt, save_every=1, resume=True)
 
     return model2.posterior, np.array(model2.data.X.ravel(), copy=True)

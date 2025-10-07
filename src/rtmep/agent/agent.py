@@ -1,11 +1,14 @@
 import pandas as pd
 from jax import random, Array, numpy as jnp
 import numpy as np
+import numpyro as pyro
+import numpyro.distributions as dist
 from numpyro.infer import MCMC
 import hbmep as mep
-from hbmep import BaseModel
-from hbmep.util import timing
-from rtmep.environment import Observation, ObsArrays
+from hbmep import BaseModel, functional as F, site
+from rtmep import Observation, ObsArrays
+
+EPS = 1e-3
 
 
 class BaseRTAgent():
@@ -51,7 +54,6 @@ class BaseAgent(BaseRTAgent, BaseModel):
         self._key = random.key(0)
         self._compiled_shape = None
 
-    @timing
     def run(
         self,
         df: pd.DataFrame = None,
@@ -117,3 +119,33 @@ class BaseAgent(BaseRTAgent, BaseModel):
             self.posterior = {u: jnp.asarray(v) for u, v in posterior.items()}
         else:
             self.posterior = None
+
+    def rl(self, intensity, features, response=None, num_used=None, **kw):
+        num_data = intensity.shape[0]
+        mask_obs = True
+        if num_used is not None:
+            mask_obs = jnp.arange(intensity.shape[0]) < num_used
+            mask_obs = mask_obs[:, None]
+        if response is not None:
+            mask_obs = mask_obs & jnp.invert(jnp.isnan(response))
+
+        with pyro.plate(site.num_response, self.num_response):
+            a = pyro.sample(site.a, dist.TruncatedNormal(50., 50., low=0.))
+            b = pyro.sample(site.b, dist.HalfNormal(1.))
+            g = pyro.sample(site.g, dist.HalfNormal(.1))
+            h = pyro.sample(site.h, dist.HalfNormal(5.))
+            v = pyro.sample(site.v, dist.HalfNormal(5.))
+            c1 = pyro.sample(site.c1, dist.HalfNormal(5.))
+            c2 = pyro.sample(site.c2, dist.HalfNormal(.5))
+
+        with pyro.handlers.mask(mask=mask_obs):
+            with pyro.plate(site.num_response, self.num_response):
+                with pyro.plate(site.num_data, num_data):
+                    mu = F.rectified_logistic(intensity, a, b, g, h, v, EPS)
+                    pyro.deterministic(site.mu, mu)
+                    alpha, beta = self.gamma_likelihood(mu, c1, c2)
+                    pyro.sample(
+                        site.obs,
+                        dist.Gamma(concentration=alpha, rate=beta),
+                        obs=response
+                    )

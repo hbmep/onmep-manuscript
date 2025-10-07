@@ -6,26 +6,34 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from hbmep import site
 from hbmep.util import generate_response_colors, make_pdf
+from rtmep.model.simulate import Simulator
 
 from rtmep.notebooks.util import enable_logger, load_model
-from core_parallel import BUILD_DIR
+from simulate_data import BUILD_DIR as SIMULATION_DIR
+from core_job import BUILD_DIR
 
 logger = logging.getLogger(__name__)
+
+NUM_RESPONSE = 3
+BUILD_DIR = os.path.join(BUILD_DIR, f"num_response_{NUM_RESPONSE}")
+
+RUN_ID = "eig"
+
 
 def get_paths(output_dir):
     draws = list(range(1000))
     paths = {draw_idx: f"draw_{draw_idx:04d}" for draw_idx in draws}
     paths = {u: os.path.join(output_dir, v) for u, v in paths.items()}
-    paths = {u: v for u, v in paths.items() if os.path.exists(os.path.join(v, "a.npz"))}
+    paths = {u: v for u, v in paths.items() if os.path.exists(os.path.join(v, "posterior", "keys.pkl"))}
     draws = [u for u in draws if u in paths.keys()]
     return draws, paths
 
 
-def load_estimate(output_dir):
-    df, _, posterior, model, _ = load_model(output_dir)
-    a = np.load(os.path.join(output_dir, "a.npz"))
-    a_true = a["a_true"]
-    a_pred = a["a_pred"]
+def load_estimate(draw, output_dir):
+    model, df, posterior, _, _ = load_model(output_dir)
+    a_pred = posterior[site.a]
+    _, _, post_one, *_ = load_model(SIMULATION_DIR, memmap_draw=draw)
+    a_true = np.asarray(post_one[site.a]).reshape(-1,)
     return df, posterior, model, a_true, a_pred,
 
 
@@ -46,19 +54,19 @@ def error_analysis(output_dir, run_id):
 
     pred_point = np.mean(pred, axis=1, keepdims=True)
     err = np.abs(pred_point - true)
+    num_draws = err.shape[0]
     err_mean = err.mean(axis=(0, 1))
     err_std = err.std(axis=(0, 1))
-    print(run_id, err_mean, err_std)
+    print(f"{num_draws}:", run_id, err_mean, err_std)
     return
     
 
 def plot_estimates(output_dir, run_id):
     run_dir = os.path.join(output_dir, run_id)
-    enable_logger(run_dir)
+    enable_logger(os.path.join(run_id, "plot_analyze.log"))
     draws, paths = get_paths(run_dir)
-    draws = draws[:25]
 
-    *_, model, _ = load_model(paths[0])
+    model, *_ = load_model(paths[draws[0]])
     num_response = model.num_response
     colors = generate_response_colors(num_response)
 
@@ -67,13 +75,13 @@ def plot_estimates(output_dir, run_id):
         kr, kc = 2, 1
         height_ratios = [1, .5] * nr
         fig, axes = plt.subplots(
-            *(nr * kr, nc * kc), figsize=(8, nr * 1.5), constrained_layout=True,
+            *(nr * kr, nc * kc), figsize=(8, nr * 1.8), constrained_layout=True,
             squeeze=False, height_ratios=height_ratios
         )
 
         for i, draw in enumerate(draws):
             path = paths[draw]
-            df, posterior, model, a_true, a_pred = load_estimate(path)
+            df, posterior, model, a_true, a_pred = load_estimate(draw, path)
             prediction_df = model.make_prediction_dataset(df)
             predictive = model.predict(df=prediction_df, posterior=posterior, return_sites=[site.mu])
             mu = predictive[site.mu].mean(axis=0)
@@ -127,10 +135,10 @@ def plot_estimates(output_dir, run_id):
 
 def main():
     output_dir = BUILD_DIR
-    run_id = "random"
+    run_id = RUN_ID
 
-    # plot_estimates(output_dir, run_id)
-    error_analysis(output_dir, run_id)
+    plot_estimates(output_dir, run_id)
+    # error_analysis(output_dir, run_id)
 
 
 if __name__ == "__main__":
