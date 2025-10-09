@@ -84,6 +84,9 @@ def save_model(model, df, posterior, encoder=None, mcmc=None, output_dir=None):
             pickle.dump((mcmc,), f, protocol=pickle.HIGHEST_PROTOCOL)
         logger.info(f"Saved mcmc to {output_path}")
 
+    if posterior is None:
+        return
+
     posterior_dir = os.path.join(output_dir, POSTERIOR_DIR)
     os.makedirs(posterior_dir, exist_ok=True)
 

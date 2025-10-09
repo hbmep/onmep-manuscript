@@ -209,3 +209,5 @@ __marimo__/
 # Ignore scripts
 src/**/*.sh
 **/out.py
+**/out.sh
+**/scripts

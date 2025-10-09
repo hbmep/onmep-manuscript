@@ -1,9 +1,13 @@
 import os
 import sys
-import logging
-
 import psutil
-import numpy as np
+import logging
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+# os.environ.setdefault("XLA_FLAGS", "--xla_force_host_platform_device_count=1")
+# os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
+# import numpyro
+# numpyro.set_host_device_count(1)
 from jax import random
 from joblib import Parallel, delayed
 
@@ -15,8 +19,6 @@ from rtmep.notebooks.util import save_model, enable_logger
 from rtmep.notebooks.constants import TMS_TOML
 from learn_posterior import BUILD_DIR as LEARN_POSTERIOR_DIR
 from simulate_data import BUILD_DIR as MODEL_DIR
-
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
 logger = logging.getLogger(__name__)
 ACCURACY_DIR = os.path.dirname(LEARN_POSTERIOR_DIR)
@@ -73,7 +75,8 @@ def run_one_draw(
                 thinning=1,
                 num_chains=4,
                 num_warmup=400,
-                num_samples=400
+                num_samples=400,
+                progress_bar=False
             )
             save_every = 1
         
@@ -90,7 +93,8 @@ def run_one_draw(
                 thinning=1,
                 num_chains=4,
                 num_warmup=400,
-                num_samples=400
+                num_samples=400,
+                progress_bar=False
             )
             save_every = 1
 
@@ -121,10 +125,7 @@ def run_one_draw(
     )
 
     # Save to disk
-    posterior = model.posterior
-    data = model.data
-    df = data.to_dataframe(intensity=model.intensity, response=model.response)
-    save_model(model, df, posterior)
+    save_model(model, None, None)
     logger.info(f"{draw} ok.")
     return
 
@@ -150,7 +151,7 @@ def main(lo, hi, run_id, n_jobs):
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    lo, hi, run_id = args
+    run_id, lo, hi = args
     lo = int(lo)
     hi = int(hi)
     # lo, hi = 0, 1

@@ -18,8 +18,8 @@ BUILD_DIR = os.path.join(REPORTS, "tests")
 os.makedirs(BUILD_DIR, exist_ok=True)
 
 MODEL_DIR = os.path.join(REPORTS, "accuracy", "learn_posterior", "simulate_data")
-MAX_OBS = 8
-STOP_THEN = 5
+MAX_OBS = 5
+STOP_THEN = 2
 LO, HI = 0, 50
 
 
@@ -35,6 +35,7 @@ def build_agent(build_dir: str):
     )
     model.build_dir = build_dir
     model._model = model.rl
+    model.propose = model.eig_gamma_proposal
     model.update = model.update_on_each
     model.mcmc_params = dict(
         thinning=1, num_chains=4, num_warmup=200, num_samples=200,

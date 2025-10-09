@@ -1,14 +1,13 @@
+import numpy as np
 import jax
 from jax import random, numpy as jnp
-from jax.scipy.special import (
-    logsumexp, gammaln,
-)
+from jax.scipy.special import logsumexp, gammaln
 import numpyro as pyro
 import numpyro.distributions as dist
 from hbmep import site, functional as F
 
 from rtmep import Observation
-from rtmep.agent.agent import BaseAgent
+from rtmep.agent.base_agent import BaseAgent
 from rtmep.model.simulate import EPS
 
 KEYS = (site.a, site.b, site.g, site.h, site.v, site.c1, site.c2)
@@ -86,6 +85,8 @@ def eig_mc_grid_gamma(self, xs, posterior, key, num_outer=None, batch_size=100):
     n = xs.shape[0]
     keys = random.split(key, n)
     outs = []
+    if batch_size is None:
+        batch_size = n
     for start in range(0, n, batch_size):
         stop = min(start + batch_size, n)
         vals_batch = (
@@ -104,12 +105,14 @@ class EIG(BaseAgent):
         *,
         toml_path: str | None = None,
         config: dict | None = None,
-        min_observations=3,
-        grid_lo=0.0, grid_hi=100.0, grid_n=201,
-        method="mc",
-        num_outer=None,
-        max_step=None,
-        batch_size=25,
+        min_observations: int = 3,
+        grid_lo: float = 0.0,
+        grid_hi: float = 100.0,
+        grid_n: int = 201,
+        method: str ="mc",
+        num_outer: int | None = None,
+        max_step: float | None = None,
+        batch_size: int | None = 25,
     ):
         super().__init__(toml_path=toml_path, config=config)
         self.min_obs = int(min_observations)
@@ -120,8 +123,8 @@ class EIG(BaseAgent):
         self.method = method
         self.num_outer = num_outer
         self.max_step = max_step
-        self._last_x = None
         self.batch_size = batch_size
+        self._last_x = None
 
     def _local_grid_fixed_n(self, local_n=101):
         if (self.max_step is None) or (self._last_x is None):
@@ -153,6 +156,7 @@ class EIG(BaseAgent):
         super().reset(*args, **kw)
         self._perm = None
         self._perm_i = 0
+        self._last_x = None
 
     def random_proposal(self):
         if (self._perm is None) or (self._perm_i >= self.grid.shape[0]):
@@ -177,3 +181,59 @@ class EIG(BaseAgent):
         if len(self.data) >= self.min_obs:
             self.mcmc, self.posterior = self.run()
         return False
+
+    def state_dict(self, include_posterior: bool = True) -> dict:
+        d = super().state_dict(include_posterior=include_posterior)
+        perm_list = None if self._perm is None else np.asarray(self._perm, dtype=int).tolist()
+
+        d["eig"] = {
+            "min_obs": int(self.min_obs),
+            "grid_lo": float(self.grid.min()),
+            "grid_hi": float(self.grid.max()),
+            "grid_n": int(self.grid_n),
+            "method": self.method,
+            "num_outer": None if self.num_outer is None else int(self.num_outer),
+            "max_step": None if self.max_step is None else float(self.max_step),
+            "batch_size": None if self.batch_size is None else int(self.batch_size),
+            "_last_x": self._last_x,
+            "perm": perm_list,
+            "perm_i": int(self._perm_i),
+        }
+        return d
+
+    def load_state_dict(self, state: dict):
+        super().load_state_dict(state)
+        eig = state.get("eig", {})
+        grid_lo = eig.get("grid_lo", None)
+        grid_hi = eig.get("grid_hi", None)
+        grid_n = eig.get("grid_n", None)
+        if (grid_lo is not None) and (grid_hi is not None) and (grid_n is not None):
+            self.grid_n = int(grid_n)
+            self.grid = jnp.linspace(float(grid_lo), float(grid_hi), int(grid_n))
+
+        self.min_obs = int(eig.get("min_obs", self.min_obs))
+        self.method = eig.get("method", self.method)
+        _num_outer = eig.get("num_outer", self.num_outer)
+        self.num_outer = None if _num_outer is None else int(_num_outer)
+        _max_step = eig.get("max_step", self.max_step)
+        self.max_step = None if _max_step is None else float(_max_step)
+        _bs = eig.get("batch_size", self.batch_size)
+        self.batch_size = None if _bs is None else int(_bs)
+
+        # Backward compatible
+        self._last_x = eig.get("_last_x", state.get("_last_x", None))
+
+        # Restore permutation
+        perm_list = eig.get("perm", None)
+        self._perm_i = int(eig.get("perm_i", 0))
+        if perm_list is None:
+            self._perm = None
+            self._perm_i = 0
+        else:
+            perm_arr = np.asarray(perm_list, dtype=int)
+            if perm_arr.shape[0] != self.grid.shape[0]:
+                self._perm = None
+                self._perm_i = 0
+            else:
+                self._perm = jnp.array(perm_arr)
+                self._perm_i = int(min(self._perm_i, self.grid.shape[0]))

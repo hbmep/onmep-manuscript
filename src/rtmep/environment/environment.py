@@ -4,7 +4,8 @@ from abc import ABC, abstractmethod
 import numpy as np
 from rtmep import CheckpointManager
 from rtmep import Observation
-from rtmep.agent.agent import BaseRTAgent
+from rtmep.agent.base_agent import BaseRTAgent
+from rtmep.telemetry import Telemetry, StepTimes, _now_ns
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +38,17 @@ class BaseEnvironment(ABC):
         self,
         agent: BaseRTAgent,
         *,
-        max_observations: int,                      # target number of observations
+        max_observations: int,                  # target number of observations
         ckpt: CheckpointManager | None = None,
         save_every: int = 1,
         resume: bool = False,                       
-        resume_from: int | str | None = None,       # step number or file path
-    ) -> int:
+        resume_from: int | str | None = None,   # step number or file path
+        timings_out: str | None = None,         # e.g., "/.../reports/run_123/timings.ndjson"
+        timings_mode: str = "ndjson",           # "ndjson" or "csv"
+        timings_flush_every: int = 50,          # flush buffer every N steps (ndjson)
+        timings_truncate_on_start: bool | None = None,
+        timing_tags: dict | None = None,        # attached to each row (e.g., {"agent":"EIG", "draw":7})
+    ):
         """
         Run until len(agent.data) == max_observations, checkpointing at every
         `save_every` iteration.
@@ -50,7 +56,6 @@ class BaseEnvironment(ABC):
           - If `resume_from` is int -> load that step.
           - If `resume_from` is str -> load that file path.
           - Else if `resume` and ckpt available -> load latest step.
-        Returns the final number of observations.
         """
         if ckpt:
             payload = None
@@ -78,30 +83,59 @@ class BaseEnvironment(ABC):
             logging.info(
                 f"Already at {len(agent.data)} ≥ target {max_observations}; nothing to do."
             )
-            return len(agent.data)
+            return
 
-        # Initialize only if empty (don't wipe resumed state)
-        if len(agent.data) == 0:
-            self.reset()
-            agent.reset()
+        auto_truncate = not (resume or isinstance(resume_from, (int, str)))
+        if timings_truncate_on_start is None:
+            timings_truncate_on_start = auto_truncate
+        tel = Telemetry(
+            timings_out,
+            timings_mode,
+            timings_flush_every,
+            timings_truncate_on_start,
+        ) if timings_out else None
+        tags = dict(timing_tags or {})
 
-        # Episode loop
-        while len(agent.data) < max_observations:
-            x = agent.propose()
-            x = self.clip(x)
-            obs = self.step(x)
-            agent_stop = agent.update(obs)
+        try:
+            # Episode loop
+            while len(agent.data) < max_observations:
+                st = StepTimes(step=len(agent.data) + 1, tags=tags.copy())
+                t_iter0 = _now_ns()
 
-            # Checkpoint after each successful append
-            if ckpt and (len(agent.data) % save_every == 0):
-                ckpt.save(
-                    step=len(agent.data),
-                    agent_state=agent.state_dict(),
-                    env_state=self.state_dict(),
-                    extra_meta={"target": int(max_observations)},
-                )
+                t0 = _now_ns()
+                x = agent.propose()
+                st.t_propose_ns = _now_ns() - t0
 
-            if agent_stop or self.if_stop():
-                break
+                t0 = _now_ns()
+                x = self.clip(x)
+                obs = self.step(x)
+                st.t_step_ns = _now_ns() - t0
 
-        return len(agent.data)
+                t0 = _now_ns()
+                agent_stop = agent.update(obs)
+                st.t_update_ns = _now_ns() - t0
+                st.agent_stop = bool(agent_stop)
+
+                # Checkpoint after each successful append
+                if ckpt and (len(agent.data) % save_every == 0):
+                    t0 = _now_ns()
+                    ckpt.save(
+                        step=len(agent.data),
+                        agent_state=agent.state_dict(),
+                        env_state=self.state_dict(),
+                        extra_meta={"target": int(max_observations)},
+                    )
+                    st.t_ckpt_ns = _now_ns() - t0
+
+                st.t_iter_ns = _now_ns() - t_iter0
+                if tel:
+                    tel.add(st)
+
+                if agent_stop or self.if_stop():
+                    break
+
+        finally:
+            if tel:
+                tel.close()
+
+        return

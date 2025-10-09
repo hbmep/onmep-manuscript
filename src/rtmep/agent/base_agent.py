@@ -7,6 +7,7 @@ from numpyro.infer import MCMC
 import hbmep as mep
 from hbmep import BaseModel, functional as F, site
 from rtmep import Observation, ObsArrays
+from rtmep.telemetry import _now_ns
 
 EPS = 1e-3
 
@@ -40,6 +41,7 @@ class BaseAgent(BaseRTAgent, BaseModel):
         self._key = random.key(0)
         self.data = ObsArrays(R=self.num_response)
         self._compiled_shape = None
+        self._last_run_ns = None
 
     def _on_response_changed(self, old, new):
         if hasattr(self, "data") and self.data is not None:
@@ -53,6 +55,7 @@ class BaseAgent(BaseRTAgent, BaseModel):
         self.posterior = None
         self._key = random.key(0)
         self._compiled_shape = None
+        self._last_run_ns = None
 
     def run(
         self,
@@ -72,6 +75,7 @@ class BaseAgent(BaseRTAgent, BaseModel):
             self.mcmc = None
             self._compiled_shape = shape_now
 
+        t0 = _now_ns()
         self.key, subkey = random.split(self.key)
         mcmc = mep.run(
             key=subkey,
@@ -88,6 +92,7 @@ class BaseAgent(BaseRTAgent, BaseModel):
             **kw
         )
         posterior = mcmc.get_samples()
+        self._last_run_ns = _now_ns() - t0
         return mcmc, posterior
 
     def state_dict(self, include_posterior: bool = True) -> dict:
@@ -99,7 +104,7 @@ class BaseAgent(BaseRTAgent, BaseModel):
             "key_data": key_data.tolist(),
             "key_dtype": str(key_data.dtype.name),
             "_compiled_shape": self._compiled_shape,
-            "_last_x": getattr(self, "_last_x", None),
+            "_last_run_ns": self._last_run_ns
         }
         if include_posterior and (self.posterior is not None):
             out["posterior"] = {k: np.asarray(v) for k, v in self.posterior.items()}
@@ -112,7 +117,7 @@ class BaseAgent(BaseRTAgent, BaseModel):
         key_dtype = jnp.dtype(state.get("key_dtype", jnp.uint32))
         self._key = random.wrap_key_data(jnp.array(key_data, dtype=key_dtype))
         self._compiled_shape = None
-        self._last_x = state.get("_last_x")
+        self._last_run_ns = state.get("_last_run_ns", None)
         self.mcmc = None
         posterior = state.get("posterior", None)
         if posterior is not None:
