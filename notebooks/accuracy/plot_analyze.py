@@ -1,13 +1,20 @@
 import os
 import logging
 
+import matplotlib as mpl
+os.environ.setdefault("MPLBACKEND", "Agg")
+mpl.use("Agg", force=True)
+
+import hbmep as mep
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 import seaborn as sns
 from scipy import stats
+from joblib import Parallel, delayed
 from hbmep import site, functional as F
-from hbmep.util import generate_response_colors, make_pdf
-from rtmep import CheckpointManager
+from hbmep.util import generate_response_colors, make_pdf, timing
+from rtmep import CheckpointManager, ObsArrays
 from rtmep.model.simulate import Simulator
 
 from rtmep.notebooks.util import enable_logger, load_model
@@ -15,30 +22,59 @@ from simulate_data import BUILD_DIR as SIMULATION_DIR
 from core_job import BUILD_DIR
 
 logger = logging.getLogger(__name__)
+NUM_SAMPLES = 64
+# NUM_SAMPLES = 24
+FINAL_STEP = f"step_{NUM_SAMPLES:06d}.pkl"
 
 RESPONSE = ['PKPK_APB', 'PKPK_ECR', 'PKPK_FCR']
-RESPONSE = ['PKPK_APB']
+# RESPONSE = ['PKPK_APB']
 # RESPONSE = ['PKPK_ECR']
-BUILD_DIR = os.path.join(BUILD_DIR, f"response_{'__'.join(RESPONSE)}")
+# RESPONSE = ['PKPK_FCR']
 
+BUILD_DIR = "/home/vishu/reports/gpu/hbmep-adaptive/tests/time/"
+# BUILD_DIR = "/home/vishu/reports/gpu/hbmep-adaptive/tests/time-automvn-100part-good/"
+# BUILD_DIR = "/home/vishu/reports/hbmep-adaptive/accuracy/out-12Oct"
+
+BUILD_DIR = os.path.join(BUILD_DIR, f"response_{'__'.join(RESPONSE)}")
 KEYS = (site.a, site.b, site.g, site.h, site.v)
 
-RUN_ID = "eig"
+RUN_ID = "eig-mcmc"
+# RUN_ID = "eig-svi"
+# RUN_ID = "eig"
+# RUN_ID = "focused-marginal"
 # RUN_ID = "random"
 
+LOAD_OFFLINE = False
+# LOAD_OFFLINE = True
 
-def get_paths(output_dir, run_ids, final_step="step_000064.pkl"):
-    draws = list(range(1000))
+N_JOBS = -1
+# N_JOBS = 1
+
+MIN_OBS_AT_ZERO = 8
+
+
+def get_paths(output_dir, run_ids, final_step=FINAL_STEP, load_offline=LOAD_OFFLINE):
+    draws = list(range(200))
     paths = {draw_idx: f"draw_{draw_idx:04d}" for draw_idx in draws}
-    paths = {
-        u: v for u, v in paths.items()
-        if all([
-            os.path.exists(os.path.join(output_dir, run_id, v, "checkpoints", final_step))
-            for run_id in run_ids
-        ])
-    }
+    if not load_offline:
+        paths = {
+            u: v for u, v in paths.items()
+            if all([
+                os.path.exists(os.path.join(output_dir, run_id, v, "checkpoints", final_step))
+                for run_id in run_ids
+            ])
+        }
+    else:
+        paths = {
+            u: v for u, v in paths.items()
+            if all([
+                os.path.exists(os.path.join(output_dir, run_id, v, "offline", final_step))
+                for run_id in run_ids
+            ])
+        }
+
     draws = sorted(paths.keys())
-    # draws = draws[:5]
+    # draws = draws[:55]
     paths = {
         (draw, run_id): os.path.join(output_dir, run_id, paths[draw])
         for draw in paths
@@ -47,21 +83,38 @@ def get_paths(output_dir, run_ids, final_step="step_000064.pkl"):
     return draws, paths
 
 
-def load_estimate(output_dir):
-    model, df, posterior, _, _ = load_model(output_dir)
+def load_estimate(path, num_samples=NUM_SAMPLES, load_offline=LOAD_OFFLINE):
+    subdir = "checkpoints"
+    ckpt_dir = os.path.join(path, subdir)
+    ckpt = CheckpointManager(ckpt_dir)
+    payload = ckpt.load_step(num_samples)
+    posterior = payload["agent_state"]["posterior"]
+    model, *_ = load_model(path)
+    data = ObsArrays.from_state(payload["agent_state"]["data"])
+    df = data.to_df(**model.variables)
     posterior = {u: posterior[u] for u in KEYS}
+    if load_offline:
+        ckpt_dir = os.path.join(path, subdir)
+        ckpt = CheckpointManager(ckpt_dir)
+        payload = ckpt.load_step(num_samples)
+        posterior = payload["agent_state"]["posterior"]
     return df, posterior, model, posterior
 
 
-def load_true(draw):
-    _, _, post_one, *_ = load_model(SIMULATION_DIR, memmap_draw=draw)
-    post_one = {u: post_one[u].reshape(-1,) for u in KEYS}
+def load_true(draw, response):
+    sim, _, post_one, *_ = load_model(SIMULATION_DIR, memmap_draw=draw)
+    response_mapping = dict(zip(sim.response, range(sim.num_response)))
+    true_response_idx = [response_mapping[u] for u in response]
+    post_one = {u: post_one[u].reshape(-1,)[true_response_idx] for u in KEYS}
     return post_one
 
 
-def figure(output_dir, run_ids, samples_space):
-    sim, *_ = load_model(SIMULATION_DIR)
-    labels_dict = {"eig": "EIG", "random": "Uniform"}
+@timing
+def figure(output_dir, run_ids, samples_space, n_jobs=N_JOBS, load_offline=LOAD_OFFLINE):
+    labels_dict = {
+        "eig": "EIG", "random": "Uniform", "focused": "EIGFocused",
+        "eig-svi": "EIG-SVI"
+    }
     enable_logger(os.path.join(output_dir, "figure.log"))
     draws, paths = get_paths(output_dir, run_ids)
 
@@ -69,38 +122,55 @@ def figure(output_dir, run_ids, samples_space):
     # compare_params = [site.a, site.b]
     # compare_params = [site.a]
 
-    true, pred = [], []
-    for named_param in compare_params:
-        for run_id in run_ids:
-            for draw in draws:
-                path = paths[(draw, run_id)]
-                ckpt_dir = os.path.join(path, "checkpoints")
-                ckpt = CheckpointManager(ckpt_dir)
-                post_one = load_true(draw)
-                a_true = post_one[named_param]
-                true.append(a_true)
-                for num_samples in samples_space:
-                    payload = ckpt.load_step(num_samples)
-                    posterior = payload["agent_state"]["posterior"]
-                    a_pred = posterior[named_param]
-                    pred.append(a_pred)
-    
-    true = np.array(true)
-    response_mapping = dict(zip(sim.response, range(sim.num_response)))
-    true_response_idx = [response_mapping[u] for u in RESPONSE]
-    true = true[..., true_response_idx]
-    true = true.reshape(len(compare_params), len(run_ids), len(draws), 1, *true.shape[1:])
-    pred = np.array(pred)
-    pred = pred.reshape(len(compare_params), len(run_ids), len(draws), len(samples_space), *pred.shape[1:])
-    pred_point = np.mean(pred, axis=-2)
+    def body_load_true_one(named_param, draw):
+        post_one = load_true(draw, response=RESPONSE)
+        return post_one[named_param]
 
-    draws_dim = 2
+    def body_load_pred_one(named_param, draw, run_id, num_samples, load_offline=LOAD_OFFLINE):
+        path = paths[(draw, run_id)]
+        ckpt = CheckpointManager(os.path.join(path, "checkpoints"))
+        if load_offline:
+            ckpt = CheckpointManager(os.path.join(path, "offline"))
+        payload = ckpt.load_step(num_samples)
+        posterior = payload["agent_state"]["posterior"]
+        return posterior[named_param]
+
+    true_tasks = []
+    for pi, named_param in enumerate(compare_params):
+        for di, draw in enumerate(draws):
+            true_tasks.append((pi, di, named_param, draw))
+
+    pred_tasks = []
+    for pi, named_param in enumerate(compare_params):
+        for di, draw in enumerate(draws):
+            for ri, run_id in enumerate(run_ids):
+                for si, num_samples in enumerate(samples_space):
+                    pred_tasks.append((pi, di, ri, si, named_param, draw, run_id, num_samples))
+
+    true_results = Parallel(n_jobs=n_jobs)(
+        delayed(body_load_true_one)(named_param, draw)
+        for (_, _, named_param, draw) in true_tasks
+    )
+    pred_results = Parallel(n_jobs=n_jobs)(
+        delayed(body_load_pred_one)(named_param, draw, run_id, num_samples)
+        for (_, _, _, _, named_param, draw, run_id, num_samples) in pred_tasks
+    )
+
+    true = np.array(true_results)
+    true = true.reshape(len(compare_params), len(draws), 1, 1, *true.shape[1:])
+
+    pred = np.array(pred_results)
+    pred = pred.reshape(len(compare_params), len(draws), len(run_ids), len(samples_space), *pred.shape[1:])
+    pred_point = np.median(pred, axis=-2)
+    assert true.shape[-1] == pred_point.shape[-1]
+
+    draws_dim = 1
     err = np.abs(pred_point - true)
+    # err = (pred_point - true) ** 2
     num_draws = err.shape[draws_dim]
     err_mean = np.mean(err, axis=draws_dim) 
     # err_mean = np.median(err, axis=draws_dim) 
     err_err = stats.sem(err, axis=draws_dim)
-    # err_err = np.std(err, axis=draws_dim)
 
     num_response = len(RESPONSE)
     nr, nc = len(compare_params), num_response
@@ -142,7 +212,7 @@ def figure(output_dir, run_ids, samples_space):
         else:
             yticks = np.arange(0, int(ymax) + 1, .2)
         yticks = sorted(list(set(yticks)))
-        axes[i, 0].set_yticks(yticks)
+        # axes[i, 0].set_yticks(yticks)
 
     for i in range(nr):
         for j in range(nc):
@@ -167,6 +237,9 @@ def figure(output_dir, run_ids, samples_space):
             )
         axes[i, 0].set_ylim(bottom=0)
         axes[i, 0].set_xlim(left=1)
+    
+    xticklabels = [u - MIN_OBS_AT_ZERO for u in samples_space]
+    axes[0, 0].set_xticklabels(xticklabels)
 
     fig.align_xlabels()
     fig.align_ylabels()
@@ -177,34 +250,8 @@ def figure(output_dir, run_ids, samples_space):
     return
 
 
-def error_analysis(output_dir, run_id):
-    run_dir = os.path.join(output_dir, run_id)
-    enable_logger(os.path.join(run_dir, "error_analysis.log"))
-    draws, paths = get_paths(run_dir)
-
-    true, pred = [], []
-    for draw in draws:
-        path = paths[(draw, run_id)]
-        *_, post_pred = load_estimate(path)
-        a_pred = post_pred[site.a]
-        post_one = load_true(draw)
-        a_true = post_one[site.a]
-        true.append(a_true)
-        pred.append(a_pred)
-    
-    true = np.array(true)
-    pred = np.array(pred)
-
-    pred_point = np.mean(pred, axis=1)
-    err = np.abs(pred_point - true)
-    num_draws = err.shape[0]
-    err_mean = err.mean(axis=0)
-    err_std = err.std(axis=0)
-    print(f"{num_draws}:", run_id, err_mean, err_std)
-    return
-    
-
-def plot_estimates(output_dir, run_id):
+@timing
+def plot_estimates(output_dir, run_id, n_jobs=N_JOBS):
     enable_logger(os.path.join(output_dir, run_id, "plot_analyze.log"))
     draws, paths = get_paths(output_dir, [run_id])
 
@@ -213,6 +260,8 @@ def plot_estimates(output_dir, run_id):
     colors = generate_response_colors(num_response)
 
     def body_make(draws):
+        print(f"Processing draws [{draws[0]}, {draws[-1]}]...")
+        xgrid = np.arange(0, 100, .5)[:, None]
         nr, nc = len(draws), num_response
         kr, kc = 2, 1
         height_ratios = [1, .5] * nr
@@ -225,8 +274,7 @@ def plot_estimates(output_dir, run_id):
             path = paths[(draw, run_id)]
             df, posterior, model, post_pred = load_estimate(path)
             a_pred = post_pred[site.a]
-            post_one = load_true(draw)
-            xgrid = np.arange(0, 100, .5)[:, None]
+            post_one = load_true(draw, response=RESPONSE)
             mu_true = F.rectified_logistic(
                 xgrid, **{u: v.reshape(1, -1) for u, v in post_one.items()}
             )
@@ -280,15 +328,10 @@ def plot_estimates(output_dir, run_id):
         return fig
     
     num_rows = 10
-    num_pages = len(draws) // num_rows
-    if len(draws) % num_rows:
-        num_pages += 1
-    figures = []
-    for page in range(num_pages):
-        print(f"Page {page + 1}/{num_pages}...")
-        fig = body_make(draws=draws[page * num_rows: (page + 1) * num_rows])
-        figures.append(fig)
-
+    pages = [draws[i:i + num_rows] for i in range(0, len(draws), num_rows)]
+    figures = Parallel(n_jobs=n_jobs)(
+        delayed(body_make)(page) for page in pages
+    )
     output_path = os.path.join(output_dir, run_id, "curves.pdf")
     make_pdf(figures, output_path)
     return
@@ -323,7 +366,7 @@ def plot_iterations(output_dir, run_id):
             a_pred = posterior[site.a]
             mu = F.rectified_logistic(xgrid, **{u: posterior[u][None] for u in KEYS})
             mu = np.array(mu).mean(axis=1)
-            post_one = load_true(draw)
+            post_one = load_true(draw, response=RESPONSE)
             mu_true = F.rectified_logistic(
                 xgrid, **{u: v.reshape(1, -1) for u, v in post_one.items()}
             )
@@ -408,14 +451,17 @@ def main():
     output_dir = BUILD_DIR
     run_id = RUN_ID
 
-    # plot_estimates(output_dir, run_id)
-    # plot_iterations(output_dir, run_id)
-    # error_analysis(output_dir, run_id)
+    plot_estimates(output_dir, run_id)
+    # # plot_iterations(output_dir, run_id)
+    # # error_analysis(output_dir, run_id)
 
-    run_ids = ["eig", "random"]
-    run_ids = ["eig"]
-    samples_space = [3, 5, 8, 12, 16, 20, 24, 32, 40, 48, 56, 64]
-    figure(output_dir, run_ids, samples_space)
+    # # run_ids = ["eig", "random"]
+    # # run_ids = ["eig", "random", "focused"]
+    # # run_ids = ["eig", "focused"]
+    # run_ids = ["eig-svi"]
+    # samples_space = [3, 5, 8, 12, 16, 20, 24, 32, 40, 48, 56, 64]
+    # samples_space = [9, 10, 11, 12, 16, 20, 24, 32, 40, 48, 56, 64]
+    # figure(output_dir, run_ids, samples_space)
 
 
 if __name__ == "__main__":

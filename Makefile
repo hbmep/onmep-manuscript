@@ -22,8 +22,13 @@ env: base
 
 dev: base
 	@echo "Installing package for development..."
-	$(PIP) install -e ".[dev]"
+	$(PIP) install -e ".[dev-core,cpu]"
 	$(PIP) install -e ../hbmep
+
+gpu: base
+	@echo "Installing package for development..."
+	$(PIP) install -e ".[dev-core,gpu-cuda12]"
+	$(PIP) install -e ../hbmep[gpu-cuda12]
 
 docs:
 	@echo "Building docs with sphinx-autobuild..."

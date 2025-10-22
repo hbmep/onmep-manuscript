@@ -2,6 +2,7 @@ import logging
 from abc import ABC, abstractmethod
 
 import numpy as np
+from hbmep.util import timing
 from rtmep import CheckpointManager
 from rtmep import Observation
 from rtmep.agent.base_agent import BaseRTAgent
@@ -34,6 +35,7 @@ class BaseEnvironment(ABC):
     def load_state_dict(self, state: dict):
         return
 
+    @timing
     def interact(
         self,
         agent: BaseRTAgent,
@@ -128,6 +130,13 @@ class BaseEnvironment(ABC):
                     st.t_ckpt_ns = _now_ns() - t0
 
                 st.t_iter_ns = _now_ns() - t_iter0
+                logger.info(
+                    f"num_samples: {len(agent.data)}/{max_observations}, "
+                    f"propose: {st.t_propose_ns / 1_000_000_000:.2f}s, "
+                    f"update: {st.t_update_ns / 1_000_000_000:.2f}s, "
+                    f"iter: {st.t_iter_ns / 1_000_000_000:.2f}s, "
+                )
+
                 if tel:
                     tel.add(st)
 

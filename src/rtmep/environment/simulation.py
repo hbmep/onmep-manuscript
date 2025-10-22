@@ -1,5 +1,6 @@
 import numpy as np
 from jax import random, numpy as jnp
+import hbmep as mep
 from hbmep.util import site
 from rtmep import Observation
 from rtmep.environment.environment import BaseEnvironment
@@ -50,12 +51,19 @@ class SimulationEnv(BaseEnvironment):
         intensity = float(intensity)
         self.df.loc[self._row_id, self.model.intensity] = intensity
         self._key, subkey = random.split(self._key)
-        obs = self.model.predict(
-            df=self.df,
+        obs = mep.predict(
+            subkey,
+            self.model._model,
+            *mep.get_regressors(self.df, **self.model.variables),
             posterior=self._post_one,
             return_sites=[site.obs],
-            key=subkey,
         )[site.obs].reshape(-1,)
+        # obs = self.model.predict(
+        #     df=self.df,
+        #     posterior=self._post_one,
+        #     return_sites=[site.obs],
+        #     key=subkey,
+        # )[site.obs].reshape(-1,)
         if self.response is not None:
             mapping = dict(zip(self.model.response, obs))
             obs = np.array([mapping[res] for res in self.response])

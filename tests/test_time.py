@@ -1,13 +1,13 @@
 import os
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
 import sys
 import psutil
 import logging
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
-os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
+import hbmep as mep
 from jax import random
 from joblib import Parallel, delayed
-
 from rtmep import CheckpointManager
 from rtmep.agent import EIG
 from rtmep.environment import SimulationEnv
@@ -20,11 +20,11 @@ BUILD_DIR = os.path.join(REPORTS, "tests", "time")
 os.makedirs(BUILD_DIR, exist_ok=True)
 
 MODEL_DIR = os.path.join(REPORTS, "accuracy", "learn_posterior", "simulate_data")
-MAX_OBSERVATIONS = 64
+MAX_OBSERVATIONS = 72
 NUM_JOBS = 1
 
 RESPONSE = ['PKPK_APB', 'PKPK_ECR', 'PKPK_FCR']
-RESPONSE = ['PKPK_APB']
+# RESPONSE = ['PKPK_APB']
 
 
 def run_one_draw(
@@ -51,25 +51,48 @@ def run_one_draw(
 
     # Build agent
     match run_id:
-        case "eig":
+        case "eig-mcmc":
             model = EIG(
                 toml_path=toml_path,
+                infer="mcmc",
                 min_observations=3,
                 grid_lo=0., grid_hi=100., grid_n=201,
                 method="mc",
                 num_outer=None,
                 max_step=50.,
-                batch_size=None
+                batch_size=67
+            )
+            model._model = model.rl
+            model.propose = model.eig_gamma_proposal
+            model.update = model.update_on_each
+            model.mcmc_params = dict(
+                thinning=2,
+                num_chains=16,
+                num_warmup=200,
+                num_samples=200,
+                progress_bar=False,
+            )
+            save_every = 1
+
+        case "eig-svi":
+            model = EIG(
+                toml_path=toml_path,
+                infer="svi",
+                min_observations=3,
+                grid_lo=0., grid_hi=100., grid_n=201,
+                method="mc",
+                num_outer=None,
+                max_step=50.,
+                batch_size=67
             )
             model._model = model.rl
             model.propose = model.eig_gamma_proposal
             model.update = model.update_on_each
             model.mcmc_params = dict(
                 thinning=1,
-                num_chains=4,
-                num_warmup=400,
-                num_samples=400,
-                progress_bar=False
+                num_chains=16,
+                num_warmup=100,
+                num_samples=100,
             )
             save_every = 1
         
@@ -123,7 +146,7 @@ def run_one_draw(
             agent="EIG", draw=env.draw, max_obs=max_obs, grid_n=model.grid_n,
             _model=model._model.__name__, propose=model.propose.__name__,
             update=model.update.__name__, batch_size=model.batch_size,
-            num_outer=model.num_outer, **model.mcmc_params
+            num_outer=model.num_outer, **model.mcmc_params, infer=model.infer
         )
     )
 
@@ -153,10 +176,16 @@ def main(lo, hi, run_id, n_jobs):
 
 
 if __name__ == "__main__":
+
     args = sys.argv[1:]
     run_id, lo, hi = args
     lo = int(lo)
     hi = int(hi)
-    # run_id = "eig"
-    # lo, hi = 0, 1
+
+    # run_id = "eig-mcmc"
+    # # run_id = "eig-svi"
+    # lo, hi = 0, 200
+    # # lo = 1
+    # # hi = lo + 1
+
     main(lo, hi, run_id, NUM_JOBS)

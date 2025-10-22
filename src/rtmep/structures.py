@@ -2,12 +2,13 @@ import time
 from dataclasses import dataclass, field
 
 import numpy as np
+import jax
 import jax.numpy as jnp
 
 
 @dataclass(frozen=True)
 class Observation:
-    response: np.ndarray        # shape (num_response,)
+    response: jnp.ndarray   # (R,)
     intensity: float
     t_sec: float = field(default_factory=lambda: time.time())
     info: dict = field(default_factory=dict)
@@ -20,13 +21,19 @@ class ObsArrays:
       Y: (N, R)     (response)
     Appends are O(1) amortized via capacity doubling.
     """
-    def __init__(self, *, R: int | None = None, dtype=float, initial_capacity: int = 32):
+    def __init__(
+        self,
+        *,
+        R: int | None = None,
+        initial_capacity: int = 32,
+    ):
         self.R: int | None = None if R is None else int(R)
-        self.dtype = dtype
+        self.dtype = jnp.dtype(jnp.float64)
         self._cap = int(initial_capacity)
         self._n = 0
-        self._X = np.empty((self._cap, 1), dtype=dtype)
-        self._Y = np.empty((self._cap, 0 if self.R is None else self.R), dtype=dtype)
+
+        self._X = jnp.empty((self._cap, 1), dtype=self.dtype)
+        self._Y = jnp.empty((self._cap, 0 if self.R is None else self.R), dtype=self.dtype)
 
     def __len__(self) -> int:
         return self._n
@@ -44,11 +51,11 @@ class ObsArrays:
     def capacity_shape(self): return (self._cap, self.R)
 
     @property
-    def X(self) -> np.ndarray:
+    def X(self) -> jax.Array:
         return self._X[:self._n, :]
 
     @property
-    def Y(self) -> np.ndarray:
+    def Y(self) -> jax.Array:
         return self._Y[:self._n, :]
 
     def clear(self) -> None:
@@ -56,27 +63,26 @@ class ObsArrays:
 
     def _grow(self, new_cap: int) -> None:
         new_cap = max(new_cap, self._cap * 2)
-        X_new = np.empty((new_cap, 1), dtype=self.dtype)
-        X_new[:self._n, :] = self._X[:self._n, :]
-        self._X = X_new
+        X_new = jnp.empty((new_cap, 1), dtype=self.dtype)
+        X_new = X_new.at[:self._n, :].set(self._X[:self._n, :])
 
         if self.R is None:
-            # Still unknown, keep 0 columns until first append sets R
-            Y_new = np.empty((new_cap, 0), dtype=self.dtype)
+            Y_new = jnp.empty((new_cap, 0), dtype=self.dtype)
         else:
-            Y_new = np.empty((new_cap, self.R), dtype=self.dtype)
-            Y_new[:self._n, :] = self._Y[:self._n, :]
+            Y_new = jnp.empty((new_cap, self.R), dtype=self.dtype)
+            Y_new = Y_new.at[:self._n, :].set(self._Y[:self._n, :])
+
+        self._X = X_new
         self._Y = Y_new
         self._cap = new_cap
 
-    def append(self, *, intensity: float, response: np.ndarray) -> None:
-        r = np.asarray(response, dtype=self.dtype).reshape(-1)
+    def append(self, *, intensity: float, response: jnp.ndarray) -> None:
+        x = jnp.asarray(intensity, dtype=self.dtype)
+        r = jnp.asarray(response, dtype=self.dtype).reshape(-1)
+
         if self.R is None:
             self.R = int(r.size)
-            # Allocate Y with the right column count and copy existing rows
-            Y_new = np.empty((self._cap, self.R), dtype=self.dtype)
-            if self._n:     # normally 0 here
-                Y_new[:self._n, :] = self._Y[:self._n, :]
+            Y_new = jnp.empty((self._cap, self.R), dtype=self.dtype)
             self._Y = Y_new
         elif int(r.size) != self.R:
             raise ValueError(f"Response length {r.size} != fixed R {self.R}")
@@ -84,66 +90,69 @@ class ObsArrays:
         if self._n >= self._cap:
             self._grow(self._cap * 2)
 
-        self._X[self._n, 0] = float(intensity)
-        self._Y[self._n, :] = r
+        self._X = self._X.at[self._n, 0].set(x)
+        self._Y = self._Y.at[self._n, :].set(r)
         self._n += 1
-
-    def as_jax(self):
-        return jnp.asarray(self.X), jnp.asarray(self.Y)
-
-    def to_dataframe(self, *, intensity: str, response: list[str], **kw):
-        import pandas as pd
-        if self.R is None:
-            return pd.DataFrame(columns=[intensity] + list(response))
-        if len(response) != self.R:
-            raise ValueError(f"response columns({len(response)}) != R({self.R})")
-        data = {intensity: self.X.ravel()}
-        for j, col in enumerate(response):
-            data[col] = self.Y[:, j]
-        return pd.DataFrame(data)
 
     def resize_R(self, R_new: int) -> None:
         R_new = int(R_new)
         if self.R == R_new:
             return
-        Y_new = np.empty((self._cap, R_new), dtype=self.dtype)
-        # Copy over as many existing response columns as we can
-        old_cols = self._Y.shape[1]
-        copy_cols = min(old_cols, R_new)
-        if copy_cols and self._n:
-            Y_new[:self._n, :copy_cols] = self._Y[:self._n, :copy_cols]
+
+        Y_new = jnp.empty((self._cap, R_new), dtype=self.dtype)
+        if self.R is not None:
+            copy_cols = min(self.R, R_new)
+            if copy_cols and self._n:
+                Y_new = Y_new.at[:self._n, :copy_cols].set(self._Y[:self._n, :copy_cols])
+
         self._Y = Y_new
         self.R = R_new
+
+    def to_df(self, *, intensity: str, response: list[str], **kw):
+        import pandas as pd
+        if self.R is None:
+            return pd.DataFrame(columns=[intensity] + list(response))
+        if len(response) != self.R:
+            raise ValueError(f"response columns({len(response)}) != R({self.R})")
+
+        X_host = np.asarray(self.X)
+        Y_host = np.asarray(self.Y)
+        data = {intensity: X_host.ravel()}
+        for j, col in enumerate(response):
+            data[col] = Y_host[:, j]
+        return pd.DataFrame(data)
 
     def to_state(self) -> dict:
         return {
             "R": self.R,
+            "dtype": str(np.dtype(self.dtype.name).name),
             "_cap": self._cap,
             "_n": self._n,
-            "_X": self._X[:self._n, :].copy(),
-            "_Y": self._Y[:self._n, :].copy(),
-            "dtype": str(np.dtype(self.dtype).name),
+            "X": np.asarray(self.X),
+            "Y": np.asarray(self.Y),
         }
 
     @classmethod
     def from_state(cls, state: dict):
-        dtype = np.dtype(state.get("dtype", float))
-        cap   = int(state["_cap"])
-        n   = int(state["_n"])
-        R   = None if state["R"] is None else int(state["R"])
+        dtype = jnp.dtype(state.get("dtype", jnp.float64))
+        cap = int(state["_cap"])
+        n = int(state["_n"])
+        R = None if state["R"] is None else int(state["R"])
 
-        obj = cls(R=R, dtype=dtype, initial_capacity=cap)
-        obj._n   = n
+        obj = cls(R=R, initial_capacity=cap)
+        obj._n = n
 
         # Restore arrays
-        x_src = state["_X"]
-        y_src = state["_Y"]
+        x_src = jnp.asarray(state["X"], dtype=dtype)
         assert x_src.shape == (n, 1), f"X shape mismatch: {x_src.shape} vs {(n, 1)}"
-        obj._X[:n, :] = x_src
+        obj._X = obj._X.at[:n, :].set(x_src)
 
         y_cols = 0 if R is None else R
+        y_src = jnp.asarray(state["Y"], dtype=dtype)
         assert y_src.shape == (n, y_cols), f"Y shape mismatch: {y_src.shape} vs {(n, y_cols)}"
         if y_cols:
-            obj._Y[:n, :] = y_src
+            obj._Y = obj._Y.at[:n, :].set(y_src)
+        else:
+            obj._Y = jnp.empty((obj._cap, 0), dtype=dtype)
 
         return obj

@@ -71,18 +71,18 @@ def save_model(model, df, posterior, encoder=None, mcmc=None, output_dir=None):
     output_path = os.path.join(output_dir, "data.pkl")
     with open(output_path, "wb") as f:
         pickle.dump((df, encoder), f, protocol=pickle.HIGHEST_PROTOCOL)
-    logger.info(f"Saved df, encoder to {output_path}")
+    # logger.info(f"Saved df, encoder to {output_path}")
 
     output_path = os.path.join(output_dir, "model.pkl")
     with open(output_path, "wb") as f:
         pickle.dump((model,), f)
-    logger.info(f"Saved model to {output_path}")
+    # logger.info(f"Saved model to {output_path}")
 
     if mcmc is not None:
         output_path = os.path.join(output_dir, "mcmc.pkl")
         with open(output_path, "wb") as f:
             pickle.dump((mcmc,), f, protocol=pickle.HIGHEST_PROTOCOL)
-        logger.info(f"Saved mcmc to {output_path}")
+        # logger.info(f"Saved mcmc to {output_path}")
 
     if posterior is None:
         return
@@ -124,7 +124,8 @@ def save_model(model, df, posterior, encoder=None, mcmc=None, output_dir=None):
     output_path = os.path.join(posterior_dir, POSTERIOR_META_JSON)
     with open(output_path, "w") as f:
         json.dump(meta, f, indent=2, sort_keys=True)
-    logger.info(f"Saved posterior arrays to {posterior_dir}")
+    # logger.info(f"Saved posterior arrays to {posterior_dir}")
+    logger.info(f"Saved to {output_dir}")
     gc.collect()
     return
 
@@ -202,7 +203,7 @@ def load_model(
             else:
                 if key not in [site.mu, site.obs]:
                     mm = np.load(src, mmap_mode="r")
-                    posterior[key] = mm[memmap_draw:memmap_draw + 1]        # shape [1, ...]
+                    posterior[key] = mm[memmap_draw:memmap_draw + 1]        # shape (1, ...)
 
     return model, df, posterior, encoder, mcmc
 

@@ -2,17 +2,17 @@ import numpy as np
 import jax
 from jax import random, numpy as jnp
 from jax.scipy.special import logsumexp, gammaln
-import numpyro as pyro
-import numpyro.distributions as dist
 from hbmep import site, functional as F
 
 from rtmep import Observation
 from rtmep.agent.base_agent import BaseAgent
 from rtmep.model.simulate import EPS
+from rtmep.util import execute_on_gpu
 
 KEYS = (site.a, site.b, site.g, site.h, site.v, site.c1, site.c2)
 
 
+@execute_on_gpu
 def loglik_gamma(y, alpha, beta):
     """
     Joint Gamma(site.alpha, site.beta) log-likelihood across R muscles (conditionally independent).
@@ -29,6 +29,7 @@ def loglik_gamma(y, alpha, beta):
     )
 
 
+@execute_on_gpu
 def _gamma_params_single(self, x, post_one):
     """
     Compute (mu, alpha, beta) at scalar x for ONE posterior draw.
@@ -39,6 +40,7 @@ def _gamma_params_single(self, x, post_one):
     return mu[0], alpha[0], beta[0]                     # each (R,)
 
 
+@execute_on_gpu
 def _gamma_params_all(self, x, posterior):
     """
     Vectorized over S draws -> returns alpha (S, R), beta (S, R)
@@ -52,6 +54,7 @@ def _gamma_params_all(self, x, posterior):
     return alpha_all, beta_all
 
 
+@execute_on_gpu
 def eig_mc_for_x_gamma(self, x, posterior, key, num_outer=None):
     """
     Uses
@@ -81,6 +84,7 @@ def eig_mc_for_x_gamma(self, x, posterior, key, num_outer=None):
     return gains.mean()
 
 
+@execute_on_gpu
 def eig_mc_grid_gamma(self, xs, posterior, key, num_outer=None, batch_size=100):
     n = xs.shape[0]
     keys = random.split(key, n)
@@ -105,6 +109,7 @@ class EIG(BaseAgent):
         *,
         toml_path: str | None = None,
         config: dict | None = None,
+        infer: str = "mcmc",
         min_observations: int = 3,
         grid_lo: float = 0.0,
         grid_hi: float = 100.0,
@@ -114,7 +119,7 @@ class EIG(BaseAgent):
         max_step: float | None = None,
         batch_size: int | None = 25,
     ):
-        super().__init__(toml_path=toml_path, config=config)
+        super().__init__(toml_path=toml_path, config=config, infer=infer)
         self.min_obs = int(min_observations)
         self.grid_n = grid_n
         self.grid = jnp.linspace(float(grid_lo), float(grid_hi), int(grid_n))
@@ -133,6 +138,7 @@ class EIG(BaseAgent):
         hi = jnp.minimum(self.grid.max(), self._last_x + self.max_step)
         return jnp.linspace(lo, hi, int(local_n))
 
+    @execute_on_gpu
     def _choose_next_x(self, posterior):
         self._key, sub = random.split(self._key)
         eig_vals = eig_mc_grid_gamma(
@@ -159,6 +165,10 @@ class EIG(BaseAgent):
         self._last_x = None
 
     def random_proposal(self):
+        needs_zero = len(self.data) < self.min_obs_at_zero
+        if needs_zero:
+            return float(0)
+
         if (self._perm is None) or (self._perm_i >= self.grid.shape[0]):
             self._key, sub = random.split(self._key)
             self._perm = random.permutation(sub, self.grid.shape[0])
@@ -167,18 +177,26 @@ class EIG(BaseAgent):
         self._perm_i += 1
         return float(self.grid[idx])
 
+    @execute_on_gpu
     def eig_gamma_proposal(self):
-        needs_random = (len(self.data) < self.min_obs) or (self.posterior is None)
+        needs_zero = len(self.data) < self.min_obs_at_zero
+        if needs_zero:
+            return float(0)
+
+        needs_random = (
+            len(self.data) - self.min_obs_at_zero < self.min_obs
+            or self.posterior is None
+        )
         if needs_random:
             return self.random_proposal()
-        else:
-            x, _ = self._choose_next_x(self.posterior)
-            self._last_x = x
-            return x
+
+        x, _ = self._choose_next_x(self.posterior)
+        self._last_x = x
+        return x
 
     def update_on_each(self, obs: Observation) -> bool:
         self.data.append(intensity=obs.intensity, response=obs.response)
-        if len(self.data) >= self.min_obs:
+        if len(self.data) >= self.min_obs_at_zero + self.min_obs:
             self.mcmc, self.posterior = self.run()
         return False
 
@@ -219,9 +237,7 @@ class EIG(BaseAgent):
         self.max_step = None if _max_step is None else float(_max_step)
         _bs = eig.get("batch_size", self.batch_size)
         self.batch_size = None if _bs is None else int(_bs)
-
-        # Backward compatible
-        self._last_x = eig.get("_last_x", state.get("_last_x", None))
+        self._last_x = eig.get("_last_x")
 
         # Restore permutation
         perm_list = eig.get("perm", None)
