@@ -1,6 +1,10 @@
 import os
 import sys
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
+lsl_cfg = os.path.abspath(os.path.join(os.path.dirname(__file__), "lsl_api.cfg"))
+if not os.path.exists(lsl_cfg):
+    raise FileNotFoundError(f"CRITICAL: LSL configuration file NOT FOUND at: {lsl_cfg}")
+os.environ["LSLAPICFG"] = lsl_cfg
 import time
 import uuid
 from dataclasses import dataclass

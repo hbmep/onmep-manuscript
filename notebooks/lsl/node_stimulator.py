@@ -1,7 +1,9 @@
 import os
-# os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
-# os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.95")
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
+lsl_cfg = os.path.abspath(os.path.join(os.path.dirname(__file__), "lsl_api.cfg"))
+if not os.path.exists(lsl_cfg):
+    raise FileNotFoundError(f"CRITICAL: LSL configuration file NOT FOUND at: {lsl_cfg}")
+os.environ["LSLAPICFG"] = lsl_cfg
 import time
 import random
 import uuid
