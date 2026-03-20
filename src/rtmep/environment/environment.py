@@ -1,8 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 
-import numpy as np
-from hbmep.util import timing
+import hbmep as mep
 from rtmep import CheckpointManager
 from rtmep import Observation
 from rtmep.agent.base_agent import BaseRTAgent
@@ -16,26 +15,25 @@ class BaseEnvironment(ABC):
         self.lo = float(lo)
         self.hi = float(hi)
 
-    def reset(self) -> None:
+    @abstractmethod
+    def reset(self):
         ...
-    
-    def clip(self, intensity: float) -> float:
-        return float(np.clip(float(intensity), self.lo, self.hi))
-
+ 
+    @abstractmethod
     def if_stop(self) -> bool:
         return False
 
     @abstractmethod
-    def step(self, intensity: float) -> Observation:
+    def step(self, action) -> Observation:
         ...
 
     def state_dict(self) -> dict:
         return {"type": self.__class__.__name__}
 
     def load_state_dict(self, state: dict):
-        return
+        ...
 
-    @timing
+    @mep.timing
     def interact(
         self,
         agent: BaseRTAgent,
@@ -43,21 +41,21 @@ class BaseEnvironment(ABC):
         max_observations: int,                  # target number of observations
         ckpt: CheckpointManager | None = None,
         save_every: int = 1,
-        resume: bool = False,                       
+        resume: bool = False,
         resume_from: int | str | None = None,   # step number or file path
         timings_out: str | None = None,         # e.g., "/.../reports/run_123/timings.ndjson"
         timings_mode: str = "ndjson",           # "ndjson" or "csv"
-        timings_flush_every: int = 50,          # flush buffer every N steps (ndjson)
+        timings_flush_every: int = 5,           # flush buffer every N steps (ndjson)
         timings_truncate_on_start: bool | None = None,
         timing_tags: dict | None = None,        # attached to each row (e.g., {"agent":"EIG", "draw":7})
     ):
         """
-        Run until len(agent.data) == max_observations, checkpointing at every
-        `save_every` iteration.
+        Run until len(agent.data) == max_observations.
+        Checkpoint at every `save_every` iteration.
         Resume rules:
-          - If `resume_from` is int -> load that step.
-          - If `resume_from` is str -> load that file path.
-          - Else if `resume` and ckpt available -> load latest step.
+          - If `resume_from` is int: load that step.
+          - If `resume_from` is str: load that file path.
+          - Else if `resume` True and `ckpt` available: load latest step.
         """
         if ckpt:
             payload = None
@@ -80,10 +78,11 @@ class BaseEnvironment(ABC):
                 logging.warning(f"{e}. Starting fresh.")
             except Exception as e:
                 logging.warning(f"Failed to resume ({e}). Starting fresh.")
-
+ 
         if len(agent.data) >= max_observations:
             logging.info(
-                f"Already at {len(agent.data)} ≥ target {max_observations}; nothing to do."
+                f"Already at {len(agent.data)} ≥ target {max_observations}. "
+                "Nothing to do."
             )
             return
 
@@ -104,21 +103,23 @@ class BaseEnvironment(ABC):
                 st = StepTimes(step=len(agent.data) + 1, tags=tags.copy())
                 t_iter0 = _now_ns()
 
+                # Agent propose
                 t0 = _now_ns()
                 x = agent.propose()
                 st.t_propose_ns = _now_ns() - t0
 
+                # Environment step to obtain new observation
                 t0 = _now_ns()
-                x = self.clip(x)
                 obs = self.step(x)
                 st.t_step_ns = _now_ns() - t0
 
+                # Agent update
                 t0 = _now_ns()
                 agent_stop = agent.update(obs)
                 st.t_update_ns = _now_ns() - t0
                 st.agent_stop = bool(agent_stop)
 
-                # Checkpoint after each successful append
+                # Checkpoint
                 if ckpt and (len(agent.data) % save_every == 0):
                     t0 = _now_ns()
                     ckpt.save(

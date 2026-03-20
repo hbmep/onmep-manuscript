@@ -1,6 +1,6 @@
 import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
-os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.95")
 import sys
 import psutil
 import logging
@@ -106,12 +106,49 @@ def run_one_draw(
             model.propose = model.random_proposal
             model.update = model.update_on_each
             model.mcmc_params = dict(
+                thinning=2,
+                num_chains=16,
+                num_warmup=200,
+                num_samples=200,
+                progress_bar=False,
+            )
+            save_every = 1
+
+        case "speed":
+            model = EIG(
+                toml_path=toml_path,
+                infer="mcmc",
+                min_observations=3,
+                # grid_lo=0., grid_hi=100., grid_n=201,
+                grid_lo=0., grid_hi=100., grid_n=101,
+                method="mc",
+                num_outer=None,
+                max_step=50.,
+                # batch_size=67
+                # batch_size=101
+                batch_size=51
+            )
+            model._model = model.rl
+            # model._model = model.ln_rl
+            model.propose = model.eig_gamma_proposal
+            model.update = model.update_on_each
+            model.mcmc_params = dict(
                 thinning=1,
+
                 num_chains=4,
                 num_warmup=400,
                 num_samples=400,
-                progress_bar=False
+
+                # num_chains=20,
+                # num_warmup=50,
+                # num_samples=50,
+                
+                progress_bar=False,
             )
+            # model.nuts_params = dict(
+            #     **model.nuts_params,
+            #     dense_mass=[(site.a, site.b, site.g, site.h, site.v)]
+            # )
             save_every = 1
 
         case _:
@@ -177,15 +214,18 @@ def main(lo, hi, run_id, n_jobs):
 
 if __name__ == "__main__":
 
-    args = sys.argv[1:]
-    run_id, lo, hi = args
-    lo = int(lo)
-    hi = int(hi)
+    # args = sys.argv[1:]
+    # run_id, lo, hi = args
+    # lo = int(lo)
+    # hi = int(hi)
 
+    # run_id = "random"
     # run_id = "eig-mcmc"
-    # # run_id = "eig-svi"
-    # lo, hi = 0, 200
-    # # lo = 1
-    # # hi = lo + 1
+    # run_id = "eig-svi"
+    run_id = "speed"
+    lo, hi = 0, 1
+    # lo, hi = 17, 200
+    # lo = 1
+    # hi = lo + 1
 
     main(lo, hi, run_id, NUM_JOBS)

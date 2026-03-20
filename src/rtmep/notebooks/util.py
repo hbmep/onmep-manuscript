@@ -7,7 +7,8 @@ import logging
 import numpy as np
 import pandas as pd
 from matplotlib.colors import rgb_to_hsv, hsv_to_rgb
-from hbmep.util import site
+from numpyro.infer import MCMC
+from hbmep import BaseModel, site
 
 from rtmep.notebooks.constants import FORMAT
 
@@ -16,29 +17,6 @@ logger = logging.getLogger(__name__)
 POSTERIOR_DIR = "posterior"
 POSTERIOR_KEYS_PKL = "keys.pkl"
 POSTERIOR_META_JSON = "meta.json"
-
-
-def enable_logger(output, *, level=logging.INFO, format=FORMAT):
-    root, ext = os.path.splitext(output)
-    if not ext: output_file = os.path.join(output, "logs.log")
-    else: output_file = output
-
-    # Create the directory if it doesn't exist
-    output_dir = os.path.dirname(output_file)
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
-
-    # Configure logging
-    logging.basicConfig(
-        format=format,
-        level=level,
-        handlers=[
-            logging.FileHandler(output_file, mode="w"),
-            logging.StreamHandler()
-        ],
-        force=True
-    )
-    logger.info(f"Logging to {output_file}")
 
 
 def run(data, model, encoder=None, run_kw={}, predict_kw={}):
@@ -137,7 +115,7 @@ def load_model(
     mcmc_file: str = "mcmc.pkl",
     *,
     memmap_draw=None,
-):
+) -> list[BaseModel, pd.DataFrame, dict[str, np.ndarray], dict, MCMC]:
     """
     Load the output saved with `save_model`.
 
@@ -310,3 +288,15 @@ def get_response_colors(response: list[str]):
     colors = []
     for response in response: colors.append(cmap_dict[response[1:]])
     return colors
+
+
+def get_subname(model: BaseModel):
+    return (
+        f'{model.mcmc_params["num_warmup"]}w'
+        f'_{model.mcmc_params["num_samples"]}s'
+        f'_{model.mcmc_params["num_chains"]}c'
+        f'_{model.mcmc_params["thinning"]}t'
+        f'_{model.nuts_params["max_tree_depth"][0]}d'
+        f'_{model.nuts_params["target_accept_prob"] * 100:.0f}a'
+        f'_{"t" if model.use_mixture else "f"}m'
+    )

@@ -1,255 +1,238 @@
-import numpy as np
-import jax
-from jax import random, numpy as jnp
-from jax.scipy.special import logsumexp, gammaln
-from hbmep import site, functional as F
+import logging
 
+import hbmep as mep
+import numpy as np
+from jax import random, numpy as jnp
+
+from rtmep.util import execute_on_gpu
 from rtmep import Observation
 from rtmep.agent.base_agent import BaseAgent
-from rtmep.model.simulate import EPS
-from rtmep.util import execute_on_gpu
+from rtmep.agent.eig_gamma import eig_grid
 
-KEYS = (site.a, site.b, site.g, site.h, site.v, site.c1, site.c2)
-
-
-@execute_on_gpu
-def loglik_gamma(y, alpha, beta):
-    """
-    Joint Gamma(site.alpha, site.beta) log-likelihood across R muscles (conditionally independent).
-    All inputs broadcast to (..., R) -> returns (...)
-    """
-    return jnp.sum(
-        (
-            alpha * jnp.log(beta)
-            - gammaln(alpha)
-            + (alpha - 1.) * jnp.log(y)
-            - beta * y
-        ),
-        axis=-1
-    )
-
-
-@execute_on_gpu
-def _gamma_params_single(self, x, post_one):
-    """
-    Compute (mu, alpha, beta) at scalar x for ONE posterior draw.
-    """
-    x_arr = jnp.array([[x]])                            # shape (1, 1)
-    mu = F.rectified_logistic(x_arr, *(post_one[u] for u in KEYS[:-2]), EPS)
-    alpha, beta = self.gamma_likelihood(mu, post_one[site.c1], post_one[site.c2])
-    return mu[0], alpha[0], beta[0]                     # each (R,)
-
-
-@execute_on_gpu
-def _gamma_params_all(self, x, posterior):
-    """
-    Vectorized over S draws -> returns alpha (S, R), beta (S, R)
-    """
-    S = posterior[site.a].shape[0]
-    def body_one_draw(i):
-        post_one = {k: posterior[k][i] for k in KEYS}               # each (R,)
-        _, alpha, beta = _gamma_params_single(self, x, post_one)
-        return alpha, beta
-    alpha_all, beta_all = jax.vmap(body_one_draw)(jnp.arange(S))    # each (S, R)
-    return alpha_all, beta_all
-
-
-@execute_on_gpu
-def eig_mc_for_x_gamma(self, x, posterior, key, num_outer=None):
-    """
-    Uses
-        U ~ Gamma(site.alpha, 1) (in shape-rate parameterization)
-        -> U / site.beta ~ Gamma(site.alpha, site.beta)
-    """
-    S = posterior[site.a].shape[0]
-    if (num_outer is None) or (num_outer >= S):
-        idx = jnp.arange(S)
-    else:
-        idx = jax.random.choice(key, S, (num_outer,), replace=False)
-    S_outer = idx.shape[0]
-    alpha_all, beta_all = _gamma_params_all(self, x, posterior)     # (S, R)
-    keys = jax.random.split(key, S_outer)
-
-    def body_one_draw(k, i):
-        alpha_s, beta_s = alpha_all[i], beta_all[i]                 # (R,)
-        y_s = jax.random.gamma(key=k, a=alpha_s) / beta_s           # (R,)
-        loglik_s = loglik_gamma(y_s, alpha_s, beta_s)
-        def body_ll_j(alp_j, bet_j):
-            return loglik_gamma(y_s, alp_j, bet_j)
-        loglik_all = jax.vmap(body_ll_j)(alpha_all, beta_all)       # (S,)
-        log_pred = logsumexp(loglik_all) - jnp.log(S)
-        return loglik_s - log_pred
-
-    gains = jax.vmap(body_one_draw)(keys, idx)
-    return gains.mean()
-
-
-@execute_on_gpu
-def eig_mc_grid_gamma(self, xs, posterior, key, num_outer=None, batch_size=100):
-    n = xs.shape[0]
-    keys = random.split(key, n)
-    outs = []
-    if batch_size is None:
-        batch_size = n
-    for start in range(0, n, batch_size):
-        stop = min(start + batch_size, n)
-        vals_batch = (
-            jax.vmap(lambda xx, kk: eig_mc_for_x_gamma(
-                self, xx, posterior, kk, num_outer
-            ))
-            (xs[start:stop], keys[start:stop])
-        )
-        outs.append(vals_batch)
-    return jnp.concatenate(outs, axis=0)
+logger = logging.getLogger(__name__)
 
 
 class EIG(BaseAgent):
     def __init__(
-        self,
-        *,
+        self, *,
+        key: random.key = random.key(0),
         toml_path: str | None = None,
         config: dict | None = None,
         infer: str = "mcmc",
-        min_observations: int = 3,
+        initial_capacity: int = 32,
+        ess_threshold: float = 0.5,
+        K: int = 1,     # possible values of features[0]
+        N0: int = 8,    # num observations at 0
+        N1: int = 3,    # num random observations for warmup/kickstart
         grid_lo: float = 0.0,
         grid_hi: float = 100.0,
-        grid_n: int = 201,
-        method: str ="mc",
+        grid_max: float = 100.0,    # TODO: Needed for LSL
+        grid_n: int = 101,
         num_outer: int | None = None,
+        batch_size: int | None = 64,
         max_step: float | None = None,
-        batch_size: int | None = 25,
+        policy: str = "eig",    # "eig", "random"
+        update_every: int = 1,
     ):
-        super().__init__(toml_path=toml_path, config=config, infer=infer)
-        self.min_obs = int(min_observations)
-        self.grid_n = grid_n
-        self.grid = jnp.linspace(float(grid_lo), float(grid_hi), int(grid_n))
-        self._perm = None
-        self._perm_i = 0
-        self.method = method
-        self.num_outer = num_outer
-        self.max_step = max_step
-        self.batch_size = batch_size
-        self._last_x = None
+        super().__init__(
+            key=key,
+            toml_path=toml_path,
+            config=config,
+            infer=infer,
+            initial_capacity=initial_capacity,
+            ess_threshold=ess_threshold,
+            K=K,
+            N0=N0,
+        )
 
-    def _local_grid_fixed_n(self, local_n=101):
-        if (self.max_step is None) or (self._last_x is None):
-            return self.grid
-        lo = jnp.maximum(self.grid.min(), self._last_x - self.max_step)
-        hi = jnp.minimum(self.grid.max(), self._last_x + self.max_step)
-        return jnp.linspace(lo, hi, int(local_n))
+        if policy not in ("eig", "random"):
+            raise ValueError("policy must be 'eig' or 'random'")
+
+        self.grid_n = grid_n
+        self.grid = jnp.linspace(grid_lo, grid_hi, grid_n, dtype=self.data.dtype_x)
+        self.grid_f = jnp.arange(self.K, dtype=self.data.dtype_f)
+        self.grid_max = grid_max
+
+        self.N1 = N1
+        self.num_outer = num_outer
+        self.batch_size = batch_size
+        self.max_step = max_step
+        self.policy = policy
+        self.update_every = max(1, update_every)
+
+        self._last_x = None
+        self._perm_x = None
+        self._perm_i = 0
+
+        self._n0_total = self.N0 * self.K
+        self._n1_total = self.N1 * self.K
+        self._n_start = self._n0_total + self._n1_total
+
+        self._t = 0
+        self._rand_k_i = 0
+        return
+
+    def _in_zero_phase(self) -> bool:
+        return self._t < self._n0_total
+
+    def _in_warm_phase(self) -> bool:
+        return (self._t >= self._n0_total) and (self._t < self._n_start)
+
+    def _random_propose(self) -> float:
+        if (self._perm_x is None) or (self._perm_i >= self.grid.shape[0]):
+            self._key, sub = random.split(self._key)
+            self._perm_x = random.permutation(sub, self.grid.shape[0])
+            self._perm_i = 0
+        idx = self._perm_x[self._perm_i]
+        self._perm_i += 1
+        return self.grid[idx]
 
     @execute_on_gpu
-    def _choose_next_x(self, posterior):
+    def _choose_next_action(self, posterior: dict):
         self._key, sub = random.split(self._key)
-        eig_vals = eig_mc_grid_gamma(
-            self, self.grid, posterior, sub, num_outer=self.num_outer,
-            batch_size=self.batch_size
+        vals = eig_grid(
+            self,
+            self.grid,
+            self.grid_f,
+            posterior,
+            sub,
+            num_outer=self.num_outer,
+            batch_size=self.batch_size,
         )
 
         if (self.max_step is not None) and (self._last_x is not None):
             lo = jnp.maximum(self.grid.min(), self._last_x - self.max_step)
             hi = jnp.minimum(self.grid.max(), self._last_x + self.max_step)
-            mask = (self.grid >= lo) & (self.grid <= hi)
-            k_local = int(jnp.argmax(jnp.where(mask, eig_vals, -jnp.inf)))
+            hi = jnp.minimum(hi, self.grid_max)
+            mask_x = (self.grid >= lo) & (self.grid <= hi)  # (N,)
+            masked = jnp.where(mask_x[None, :], vals, -jnp.inf)
+            flat = jnp.argmax(masked)
         else:
-            k_local = int(jnp.argmax(eig_vals))
+            flat = jnp.argmax(vals)
 
-        x_next = float(self.grid[k_local]) 
-        self._last_x = x_next
-        return x_next, eig_vals
+        N = self.grid.shape[0]
+        k_best = int(flat // N)
+        ix_best = int(flat % N)
+        x_best = self.grid[ix_best]
+
+        self._last_x = x_best
+        return x_best, k_best, vals
+
+    def eig_propose(self):
+        if self._in_zero_phase():
+            k = self._t % self.K
+            k = jnp.array([k])
+            return 0., k
+
+        if self._in_warm_phase():
+            k = (self._t - self._n0_total) % self.K
+            k = jnp.array([k])
+            x = self._random_propose()
+            self._last_x = x
+            return x, k
+
+        if (self.policy == "random") or (self.posterior is None):
+            k = self._rand_k_i % self.K
+            k = jnp.array([k])
+            self._rand_k_i += 1
+            x = self._random_propose()
+            self._last_x = x
+            return x, k
+
+        x, k, _ = self._choose_next_action(self.posterior)
+        k = jnp.array([k])
+        return x, k
+    
+    def propose(self):
+        return self.eig_propose()
+
+    def update(self, obs: Observation) -> bool:
+        return self.update_on_each(obs)
+
+    def update_on_each(self, obs: Observation) -> bool:
+        self.data.append(intensity=obs.intensity, features=obs.features, response=obs.response)
+        self._t = self.data.n
+
+        if self._t >= self._n_start:
+            n_after_warm = self._t - self._n_start
+            if (self.posterior is None) or (n_after_warm % self.update_every == 0):
+                self.mcmc, self.posterior = self.run()
+
+        return False
 
     def reset(self, *args, **kw):
         super().reset(*args, **kw)
-        self._perm = None
-        self._perm_i = 0
         self._last_x = None
-
-    def random_proposal(self):
-        needs_zero = len(self.data) < self.min_obs_at_zero
-        if needs_zero:
-            return float(0)
-
-        if (self._perm is None) or (self._perm_i >= self.grid.shape[0]):
-            self._key, sub = random.split(self._key)
-            self._perm = random.permutation(sub, self.grid.shape[0])
-            self._perm_i = 0
-        idx = int(self._perm[self._perm_i])
-        self._perm_i += 1
-        return float(self.grid[idx])
-
-    @execute_on_gpu
-    def eig_gamma_proposal(self):
-        needs_zero = len(self.data) < self.min_obs_at_zero
-        if needs_zero:
-            return float(0)
-
-        needs_random = (
-            len(self.data) - self.min_obs_at_zero < self.min_obs
-            or self.posterior is None
-        )
-        if needs_random:
-            return self.random_proposal()
-
-        x, _ = self._choose_next_x(self.posterior)
-        self._last_x = x
-        return x
-
-    def update_on_each(self, obs: Observation) -> bool:
-        self.data.append(intensity=obs.intensity, response=obs.response)
-        if len(self.data) >= self.min_obs_at_zero + self.min_obs:
-            self.mcmc, self.posterior = self.run()
-        return False
+        self._perm_x = None
+        self._perm_i = 0
+        self._t = self.data.n
+        self._rand_k_i = 0
+        return
 
     def state_dict(self, include_posterior: bool = True) -> dict:
         d = super().state_dict(include_posterior=include_posterior)
-        perm_list = None if self._perm is None else np.asarray(self._perm, dtype=int).tolist()
+
+        perm_list = None
+        if self._perm_x is not None:
+            perm_list = np.asarray(self._perm_x, dtype=int).tolist()
 
         d["eig"] = {
-            "min_obs": int(self.min_obs),
-            "grid_lo": float(self.grid.min()),
-            "grid_hi": float(self.grid.max()),
-            "grid_n": int(self.grid_n),
-            "method": self.method,
-            "num_outer": None if self.num_outer is None else int(self.num_outer),
-            "max_step": None if self.max_step is None else float(self.max_step),
-            "batch_size": None if self.batch_size is None else int(self.batch_size),
-            "_last_x": self._last_x,
-            "perm": perm_list,
-            "perm_i": int(self._perm_i),
+            "N1": self.N1,
+            "grid_lo": np.asarray(self.grid).min(),
+            "grid_hi": np.asarray(self.grid).max(),
+            "grid_n": self.grid_n,
+            "num_outer": None if self.num_outer is None else self.num_outer,
+            "batch_size": None if self.batch_size is None else self.batch_size,
+            "max_step": None if self.max_step is None else self.max_step,
+            "policy": str(self.policy),
+            "update_every": self.update_every,
+            "_last_x": None if self._last_x is None else self._last_x,
+            "_perm_x": perm_list,
+            "_perm_i": self._perm_i,
+            "_t": self._t,
+            "_rand_k_i": self._rand_k_i,
         }
         return d
 
     def load_state_dict(self, state: dict):
         super().load_state_dict(state)
-        eig = state.get("eig", {})
-        grid_lo = eig.get("grid_lo", None)
-        grid_hi = eig.get("grid_hi", None)
-        grid_n = eig.get("grid_n", None)
-        if (grid_lo is not None) and (grid_hi is not None) and (grid_n is not None):
-            self.grid_n = int(grid_n)
-            self.grid = jnp.linspace(float(grid_lo), float(grid_hi), int(grid_n))
 
-        self.min_obs = int(eig.get("min_obs", self.min_obs))
-        self.method = eig.get("method", self.method)
-        _num_outer = eig.get("num_outer", self.num_outer)
-        self.num_outer = None if _num_outer is None else int(_num_outer)
-        _max_step = eig.get("max_step", self.max_step)
-        self.max_step = None if _max_step is None else float(_max_step)
-        _bs = eig.get("batch_size", self.batch_size)
-        self.batch_size = None if _bs is None else int(_bs)
-        self._last_x = eig.get("_last_x")
+        ed = state.get("eig", {})
+        self.N1 = ed["N1"]
+        grid_lo = ed["grid_lo"]
+        grid_hi = ed["grid_hi"]
+        grid_n = ed["grid_n"]
+        self.grid_n = grid_n
+        self.grid = jnp.linspace(grid_lo, grid_hi, grid_n)
 
-        # Restore permutation
-        perm_list = eig.get("perm", None)
-        self._perm_i = int(eig.get("perm_i", 0))
+        self.num_outer = ed["num_outer"]
+        self.batch_size = ed["batch_size"]
+        self.max_step = ed["max_step"]
+        self.policy = ed["policy"]
+        self.update_every = ed["update_every"]
+        self._last_x = ed["_last_x"]
+
+        perm_list = ed["_perm_x"]
+        perm_i = int(ed.get("_perm_i", 0))
+
         if perm_list is None:
-            self._perm = None
+            self._perm_x = None
             self._perm_i = 0
         else:
-            perm_arr = np.asarray(perm_list, dtype=int)
-            if perm_arr.shape[0] != self.grid.shape[0]:
-                self._perm = None
-                self._perm_i = 0
-            else:
-                self._perm = jnp.array(perm_arr)
-                self._perm_i = int(min(self._perm_i, self.grid.shape[0]))
+            arr = np.asarray(perm_list, dtype=int)
+            self._perm_x = arr
+            self._perm_i = min(perm_i, arr.shape[0])
+
+        self._n0_total = self.N0 * self.K
+        self._n1_total = self.N1 * self.K
+        self._n_start = self._n0_total + self._n1_total
+
+        self._t = int(ed.get("_t", self.data.n))
+        if self._t != self.data.n:
+            logger.warning(
+                f"State mismatch: _t={self._t} "
+                f"but data.n={self.data.n}. Using data.n."
+            )
+            self._t = self.data.n
+        self._rand_k_i = ed["_rand_k_i"]
+        return

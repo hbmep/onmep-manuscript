@@ -1,4 +1,3 @@
-from __future__ import annotations
 import os, json, time
 from dataclasses import dataclass, asdict, field
 
@@ -21,7 +20,7 @@ class StepTimes:
 
 
 class Telemetry:
-    """Lightweight buffered writer for per-iteration timings."""
+    """Buffered writer for per-iteration timings."""
     def __init__(
         self,
         out: str | None,
@@ -37,11 +36,13 @@ class Telemetry:
             os.makedirs(os.path.dirname(self.out), exist_ok=True)
             if truncate_on_start and self.mode == "ndjson":
                 open(self.out, "w").close()
+        return
 
     def add(self, st: StepTimes):
         self._buf.append(st)
         if self.out and self.mode == "ndjson" and len(self._buf) >= self.flush_every:
             self._flush_ndjson(append=True)
+        return
 
     def close(self):
         if not self.out or not self._buf:
@@ -50,9 +51,11 @@ class Telemetry:
         if self.mode == "ndjson":
             self._flush_ndjson(append=True)
         self._buf.clear()
+        return
 
     def _flush_ndjson(self, append: bool):
         with open(self.out, "a" if append else "w") as f:
             for st in self._buf:
                 f.write(json.dumps(asdict(st)) + "\n")
         self._buf.clear()
+        return

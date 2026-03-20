@@ -1,20 +1,17 @@
 import logging
 
+import hbmep as mep
 import numpy as np
 import jax
 import jax.numpy as jnp
 import numpyro as pyro
 import numpyro.distributions as dist
 
-from hbmep import functional as F
-from hbmep.model import BaseModel
-from hbmep.util import site
-
 logger = logging.getLogger(__name__)
 EPS = 1e-3
 
 
-class Simulator(BaseModel):
+class Simulator(mep.BaseModel):
     def __init__(self, *args, **kw):
         super(Simulator, self).__init__(*args, **kw)
         self.simulate = False
@@ -30,45 +27,45 @@ class Simulator(BaseModel):
             mask_obs = np.invert(np.isnan(response))
 
         # Hyper-priors
-        a_scale = pyro.sample(site.a.scale, dist.HalfNormal(50.))
-        b_scale = pyro.sample(site.b.scale, dist.HalfNormal(1.))
-        h_scale = pyro.sample(site.h.scale, dist.HalfNormal(5.))
+        a_scale = pyro.sample(mep.site.a.scale, dist.HalfNormal(50.))
+        b_scale = pyro.sample(mep.site.b.scale, dist.HalfNormal(1.))
 
-        g_scale = pyro.sample(site.g.scale, dist.HalfNormal(.1))
-        v_scale = pyro.sample(site.v.scale, dist.HalfNormal(5.))
+        h_scale = pyro.sample(mep.site.h.scale, dist.HalfNormal(5.))
+        g_scale = pyro.sample(mep.site.g.scale, dist.HalfNormal(.1))
+        v_scale = pyro.sample(mep.site.v.scale, dist.HalfNormal(5.))
 
-        c1_scale = pyro.sample(site.c1.scale, dist.HalfNormal(5.))
-        c2_scale = pyro.sample(site.c2.scale, dist.HalfNormal(.5))
+        c1_scale = pyro.sample(mep.site.c1.scale, dist.HalfNormal(5.))
+        c2_scale = pyro.sample(mep.site.c2.scale, dist.HalfNormal(.5))
 
         # Priors
-        with pyro.plate(site.num_response, self.num_response):
+        with pyro.plate(mep.site.num_response, self.num_response):
             # Hyper-priors
-            a_loc = pyro.sample(site.a.loc, dist.TruncatedNormal(50., 50., low=0))
-            b_loc = pyro.sample(site.b.loc, dist.TruncatedNormal(0.5, 1.))
-            h_loc = pyro.sample(site.h.loc, dist.TruncatedNormal(3., 5.))
+            a_loc = pyro.sample(mep.site.a.loc, dist.TruncatedNormal(50., 50., low=0))
+            b_loc = pyro.sample(mep.site.b.loc, dist.TruncatedNormal(0.5, 1.))
+            h_loc = pyro.sample(mep.site.h.loc, dist.TruncatedNormal(3., 5.))
 
-            with pyro.plate_stack(site.num_features, num_features, rightmost_dim=-2):
-                a = pyro.sample(site.a, dist.TruncatedNormal(a_loc, a_scale, low=0))
-                b = pyro.sample(site.b, dist.TruncatedNormal(b_loc, b_scale, low=0))
-                h = pyro.sample(site.h, dist.TruncatedNormal(h_loc, h_scale, low=0))
+            with pyro.plate_stack(mep.site.num_features, num_features, rightmost_dim=-2):
+                a = pyro.sample(mep.site.a, dist.TruncatedNormal(a_loc, a_scale, low=0))
+                b = pyro.sample(mep.site.b, dist.TruncatedNormal(b_loc, b_scale, low=0))
+                h = pyro.sample(mep.site.h, dist.TruncatedNormal(h_loc, h_scale, low=0))
 
-                g = pyro.sample(site.g, dist.HalfNormal(g_scale))
-                v = pyro.sample(site.v, dist.HalfNormal(v_scale))
+                g = pyro.sample(mep.site.g, dist.HalfNormal(g_scale))
+                v = pyro.sample(mep.site.v, dist.HalfNormal(v_scale))
 
-                c1 = pyro.sample(site.c1, dist.HalfNormal(c1_scale))
-                c2 = pyro.sample(site.c2, dist.HalfNormal(c2_scale))
+                c1 = pyro.sample(mep.site.c1, dist.HalfNormal(c1_scale))
+                c2 = pyro.sample(mep.site.c2, dist.HalfNormal(c2_scale))
 
         # Outlier probability
         if self.use_mixture:
-            q = pyro.sample(site.outlier_prob, dist.Uniform(0., 0.01))
+            q = pyro.sample(mep.site.outlier_prob, dist.Uniform(0., 0.01))
 
         # Observation model
         with pyro.handlers.mask(mask=mask_obs):
-            with pyro.plate(site.num_response, self.num_response):
-                with pyro.plate(site.num_data, num_data):
+            with pyro.plate(mep.site.num_response, self.num_response):
+                with pyro.plate(mep.site.num_data, num_data):
                     mu = pyro.deterministic(
-                        site.mu,
-                        F.rectified_logistic(
+                        mep.site.mu,
+                        mep.functional.rectified_logistic(
                             intensity,
                             a[*features.T],
                             b[*features.T],
@@ -100,7 +97,7 @@ class Simulator(BaseModel):
 
                     # Observations
                     y_ = pyro.sample(
-                        site.obs,
+                        mep.site.obs,
                         (
                             Mixture if self.use_mixture
                             else dist.Gamma(concentration=alpha, rate=beta)

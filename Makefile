@@ -5,6 +5,7 @@ SHELL := bash
 PY ?= python3.11
 VENV := .venv
 PIP := $(VENV)/bin/python -m pip
+PIP_NO_CACHE := --no-cache-dir
 
 .PHONY: base env dev docs
 
@@ -14,21 +15,23 @@ base:
 	$(PY) -m venv $(VENV)
 	@echo "Upgrading pip..."
 	$(PIP) install --upgrade pip
+	@echo "Purging pip cache..."
+	$(PIP) cache purge
 
 env: base
 	@echo "Installing package..."
-	$(PIP) install .
-	$(PIP) install -e ../hbmep
+	$(PIP) install $(PIP_NO_CACHE) .
+	$(PIP) install $(PIP_NO_CACHE) -e ../hbmep
 
 dev: base
 	@echo "Installing package for development..."
-	$(PIP) install -e ".[dev-core,cpu]"
-	$(PIP) install -e ../hbmep
+	$(PIP) install $(PIP_NO_CACHE) -e ".[dev-core,cpu]"
+	$(PIP) install $(PIP_NO_CACHE) -e ../hbmep
 
 gpu: base
 	@echo "Installing package for development..."
-	$(PIP) install -e ".[dev-core,gpu-cuda12]"
-	$(PIP) install -e ../hbmep[gpu-cuda12]
+	$(PIP) install $(PIP_NO_CACHE) -e ".[dev-core,gpu-cuda12]"
+	$(PIP) install $(PIP_NO_CACHE) -e ../hbmep[gpu-cuda12]
 
 docs:
 	@echo "Building docs with sphinx-autobuild..."

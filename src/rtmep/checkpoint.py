@@ -12,9 +12,10 @@ class CheckpointManager:
     def __post_init__(self):
         os.makedirs(self.root, exist_ok=True)
         self.latest_path = os.path.join(self.root, "latest.json")
+        return
 
     def _step_path(self, step: int) -> str:
-        return os.path.join(self.root, f"step_{step:06d}.pkl")
+        return os.path.join(self.root, f"step_{step:03d}.pkl")
 
     def latest(self):
         try:
@@ -54,8 +55,9 @@ class CheckpointManager:
             json.dump(meta, tmp)
             tmp_path = tmp.name
         os.replace(tmp_path, self.latest_path)
+        return
 
-    def load_latest(self):
+    def load_latest(self) -> dict[str] | None:
         """Load last successful checkpoint."""
         meta = self.latest()
         if not meta:
@@ -72,6 +74,10 @@ class CheckpointManager:
         """Load a checkpoint saved at a specific step number."""
         p = self._step_path(step)
         if not os.path.isfile(p):
-            raise FileNotFoundError(f"Checkpoint not found for step={step}: {p}")
+            p_ = os.path.join(self.root, f"step_{step:06d}.pkl")
+            if os.path.isfile(p_):
+                p = p_
+            else:
+                raise FileNotFoundError(f"Checkpoint not found for step={step}: {p}")
         with open(p, "rb") as f:
             return pickle.load(f)

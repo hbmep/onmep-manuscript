@@ -2,9 +2,10 @@ import os
 import logging
 
 import pandas as pd
+import hbmep as mep
 from rtmep.model.simulate import Simulator
 
-from rtmep.notebooks.util import enable_logger, run
+from rtmep.notebooks.util import run
 from rtmep.notebooks.constants import REPORTS, TMS_DATA, TMS_TOML
 
 logger = logging.getLogger(__name__)
@@ -43,5 +44,5 @@ if __name__ == "__main__":
         model.response = model.response[response_id:response_id + 1]
         model.build_dir = os.path.join(model.build_dir, model.response[0])
 
-    enable_logger(model.build_dir)
+    mep.enable_logging(model.build_dir)
     main(TMS_DATA)
