@@ -20,19 +20,10 @@ base:
 
 env: base
 	@echo "Installing package..."
-	$(PIP) install $(PIP_NO_CACHE) .
-	$(PIP) install $(PIP_NO_CACHE) -e ../hbmep
+	$(PIP) install $(PIP_NO_CACHE) -e .[cuda12]
 
 dev: base
-	@echo "Installing package for development..."
-	$(PIP) install $(PIP_NO_CACHE) -e ".[dev-core,cpu]"
-	$(PIP) install $(PIP_NO_CACHE) -e ../hbmep
-
-gpu: base
-	@echo "Installing package for development..."
-	$(PIP) install $(PIP_NO_CACHE) -e ".[dev-core,gpu-cuda12]"
-	$(PIP) install $(PIP_NO_CACHE) -e ../hbmep[gpu-cuda12]
-
-docs:
-	@echo "Building docs with sphinx-autobuild..."
-	$(VENV)/bin/sphinx-autobuild docs/source docs/build/html
+	@echo "Installing package..."
+	$(PIP) install $(PIP_NO_CACHE) -e .[cuda12]
+	$(PIP) install $(PIP_NO_CACHE) --no-deps -e ../hbmep
+	$(PIP) install $(PIP_NO_CACHE) --no-deps -e ../onmep

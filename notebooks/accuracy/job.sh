@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --output=logs/%x_%j.log
 #SBATCH --error=logs/%x_%j.log
-#SBATCH --reservation=vt2353_jbc28_gp_res
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
+#SBATCH --time=7-00:00:00
 
 cd "$HOME/repos/hbmep-adaptive/notebooks/accuracy" || exit 1
 mkdir -p logs
