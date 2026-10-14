@@ -4,6 +4,11 @@ This repository contains code to reproduce the results in the paper [Bayesian ad
 
 It uses [onMEP v0.5.0](https://github.com/hbmep/onmep/tree/v0.5.0) and [hbMEP v0.9.0](https://github.com/hbmep/hbmep/tree/v0.9.0). See [`pyproject.toml`](https://github.com/hbmep/onmep-manuscript/blob/main/pyproject.toml) for dependencies.
 
+[![Cite](https://img.shields.io/badge/stats.AP-arXiv:2610.15000-B31B1B.svg)](https://doi.org/10.48550/arXiv.2610.15000)
+[![Cite](https://img.shields.io/badge/DOI-10.1016%2Fj.brs.2025.09.008-blue.svg)](https://doi.org/10.1016/j.brs.2025.09.008)
+[![Cite](https://img.shields.io/badge/stats.AP-arXiv:2407.08709-B31B1B.svg)](https://doi.org/10.48550/arXiv.2407.08709)
+
+
 ## Installation
 
 Begin by creating a virtual environment:
@@ -33,9 +38,17 @@ The Python interpreter will be located at `.venv/bin/python`. You can use it to 
 
 ## Citation
 
-Please consider citing [Tyagi et al., 2026](?) if you find this code useful in your research:
+Please consider citing [Tyagi et al., 2026](https://doi.org/10.48550/arXiv.2610.15000) if you find this code useful in your research:
 
 ```bibtex
+@misc{tyagi_bayesian_2026,
+	title = {Bayesian adaptive design for neural recruitment curves},
+	author = {Tyagi, Vishweshwar and Dukkipati, Saihari S. and Twili, Daniel and Mikhaeil, Jonas M. and Gelman, Andrew and Carmel, Jason B. and McIntosh, James R.},
+	url = {https://doi.org/10.48550/arXiv.2610.15000},
+	publisher = {arXiv},
+	year = {2026},
+	doi = {10.48550/arXiv.2610.15000},
+}
 ```
 
 as well as [Tyagi et al., 2025](https://doi.org/10.1016/j.brs.2025.09.008)
